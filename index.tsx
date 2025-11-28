@@ -14,8 +14,6 @@ const App = () => {
   const [file, setFile] = useState<File | null>(null);
   const [pastedText, setPastedText] = useState<string>(""); // Store text if user pastes text
   const [fileName, setFileName] = useState<string>("");
-  // Defaulting to 'word' mode internally as requested to remove the UI selector
-  const conversionMode = 'word'; 
   
   // --- RESULT STATE ---
   const [resultContent, setResultContent] = useState<string>("");
@@ -23,6 +21,9 @@ const App = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [loadingStatus, setLoadingStatus] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+
+  // --- PREVIEW MODE STATE ---
+  const [isPreviewMode, setIsPreviewMode] = useState<boolean>(false);
 
   // --- INITIALIZATION ---
   useEffect(() => {
@@ -40,6 +41,15 @@ const App = () => {
     window.addEventListener('paste', handleGlobalPaste);
     return () => window.removeEventListener('paste', handleGlobalPaste);
   }, [activeTab]);
+
+  // Handle MathJax Rendering when entering Preview Mode
+  useEffect(() => {
+    if (isPreviewMode && resultContent && (window as any).MathJax) {
+       setTimeout(() => {
+          (window as any).MathJax.typesetPromise && (window as any).MathJax.typesetPromise();
+       }, 100);
+    }
+  }, [isPreviewMode, resultContent]);
 
   const handleApiKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newVal = e.target.value;
@@ -59,10 +69,13 @@ const App = () => {
       "xmlns='http://www.w3.org/TR/REC-html40'>" +
       "<head><meta charset='utf-8'><title>" + title + "</title>" +
       "<style>" + 
-      "body { font-family: 'Times New Roman', serif; font-size: 12pt; line-height: 1.5; } " + 
-      "p { margin-bottom: 6pt; } " +
-      "table { border-collapse: collapse; width: 100%; margin-top: 10px; border: 1px solid #000; } " +
-      "td, th { border: 1px solid #000; padding: 5px; } " +
+      "body { font-family: 'Be Vietnam Pro', 'Times New Roman', serif; font-size: 12pt; line-height: 1.5; } " + 
+      "p { margin-bottom: 6pt; margin-top: 0; } " +
+      "table { border-collapse: collapse; width: 100%; margin-top: 10px; border: 2px solid #000; } " +
+      "td { border: 1px solid #000; padding: 5px; color: #000; } " +
+      "th { border: 1px solid #000; padding: 5px; background-color: #003366; color: #ffffff; font-weight: bold; } " +
+      /* Force MathJax output to behave nicely in Word if possible, though Word uses images usually */
+      "mjx-container { display: inline-block !important; margin: 0 !important; }" +
       "</style>" +
       "</head><body>" + content + "</body></html>";
   };
@@ -90,6 +103,7 @@ const App = () => {
       setPastedText(""); // Clear pasted text if file is chosen
       setError(null);
       setResultContent("");
+      setIsPreviewMode(false);
     }
   };
 
@@ -107,6 +121,7 @@ const App = () => {
           setPastedText("");
           setError(null);
           setResultContent("");
+          setIsPreviewMode(false);
           // Prevent default paste behavior if it's an image
           e.preventDefault();
           return;
@@ -115,8 +130,6 @@ const App = () => {
     }
     
     // Handle Text Paste (if no image found or intended)
-    // We let normal text paste happen in textareas, but if we want to capture it as "input"
-    // Here we check if the user is NOT focusing on an input field
     const target = e.target as HTMLElement;
     if (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA' && !target.isContentEditable) {
         const text = e.clipboardData?.getData("text");
@@ -126,6 +139,7 @@ const App = () => {
              setFileName("");
              setError(null);
              setResultContent("");
+             setIsPreviewMode(false);
         }
     }
   };
@@ -136,7 +150,8 @@ const App = () => {
     setIsLoading(true);
     setError(null);
     setResultContent("");
-    setLoadingStatus("Đang phân tích dữ liệu...");
+    setLoadingStatus("Đang phân tích và định dạng...");
+    setIsPreviewMode(false);
 
     try {
       const ai = new GoogleGenAI({ apiKey: getApiKey() });
@@ -152,27 +167,48 @@ const App = () => {
           parts.push({ text: `Dưới đây là nội dung văn bản cần xử lý:\n${pastedText}` });
       }
 
-      // Prompt
+      // Prompt updated based on user specific requests
       const prompt = `
-Bạn là một chuyên gia chuyển đổi tài liệu và soạn thảo văn bản.
-Nhiệm vụ: Chuyển đổi nội dung đầu vào (hình ảnh, PDF, hoặc văn bản thô) thành mã HTML sạch, chuyên nghiệp để dán vào Microsoft Word.
+Bạn là một chuyên gia chuyển đổi tài liệu, soạn thảo văn bản Toán - Lý - Hóa chuyên nghiệp.
+Nhiệm vụ: Chép lại nội dung đầu vào thành mã HTML sạch, chuẩn để dán vào Microsoft Word.
 
-YÊU CẦU:
-1. **Giữ nguyên định dạng và nội dung**: Tiêu đề, đoạn văn, danh sách, bảng biểu (table).
-2. **Công thức toán học**: Nếu có công thức toán, hãy cố gắng viết bằng ký tự Unicode hoặc dạng text dễ đọc nhất có thể (VD: x², H₂O).
-3. **KHÔNG** dùng Markdown (không dùng \`\`\`). Chỉ xuất ra mã HTML thuần túy (thẻ p, h1, h2, table, b, i...).
-4. Bỏ qua các chi tiết thừa như số trang ở góc, header/footer rác nếu là file scan.
-5. Nếu đầu vào là văn bản thô, hãy định dạng lại cho đẹp (chia đoạn, in đậm tiêu đề).
+TUÂN THỦ 100% CÁC QUY TẮC SAU (KHÔNG ĐƯỢC BỎ QUA):
+
+1. **Chính tả & Unicode**:
+   - Rà soát và tự động sửa lỗi chính tả tiếng Việt.
+   - Sửa các lỗi unicode character bị lỗi font.
+
+2. **Toán học & Khoa học (QUAN TRỌNG)**:
+   - Giữ nguyên nội dung gốc nhưng sửa các công thức toán bị lỗi và bắt buộc đặt trong cặp dấu $...$ (LaTeX).
+   - **ĐẶC BIỆT LƯU Ý:** Công thức toán nằm trong dòng văn bản phải viết liền mạch, **TUYỆT ĐỐI KHÔNG** được xuống dòng trước hoặc sau công thức. Chỉ dùng $...$ (inline math), **KHÔNG** dùng $$...$$ (block math) trừ khi công thức đó đứng riêng một mình một dòng.
+   - Ký tự Hy Lạp trong công thức vật lý:
+     ρ → \\rho, θ → \\theta, α → \\alpha, β → \\beta, Δ → \\Delta, μ → \\mu, λ → \\lambda...
+   - Ký hiệu: ◦C chuyển thành ^\\circ C (Ví dụ: $300^\\circ C$, $-23^\\circ C$). % chuyển thành \\%.
+   - Đơn vị đo: Thêm khoảng cách nhỏ (\\;) giữa số và đơn vị. Ví dụ: $50\\;cm$, $100\\;g$.
+   - Sửa định dạng số/tọa độ: 
+     Ví dụ: ($-2;0;0$) thành $(-2;0;0)$.
+     Ví dụ: *Oxy* thành $Oxy$.
+
+3. **Cấu trúc & Trình bày**:
+   - **XÓA BỎ HOÀN TOÀN** bảng đánh dấu kiểu (|Phát biểu|Đúng|Sai|) và các ký tự đánh dấu thừa (a), (b)... trong bảng đó.
+   - Thay thế bảng đó bằng danh sách xuống dòng với định dạng: a) Nội dung... hoặc A. Nội dung...
+   - Bỏ đi dấu "*" thừa xung quanh chữ (Ví dụ: *Câu 1* -> <b>Câu 1</b> hoặc chỉ Câu 1, không để dấu sao).
+   - Dữ liệu [XUỐNG DÒNG] hợp lý. Bỏ dòng trống thừa không có dữ liệu.
+   - Sử dụng thẻ <p> cho đoạn văn, <br> để ngắt dòng. Không dùng ký tự \\n.
+
+4. **Nguyên tắc**: 
+   - Không tự ý thêm hay bớt nội dung gốc (ngoại trừ việc xóa bảng Đúng/Sai thừa).
+   - Chỉ trả về nội dung đã xử lý dưới dạng HTML (thẻ p, b, i, br...). KHÔNG trả về Markdown (\`\`\`).
 `;
 
       parts.push({ text: prompt });
 
-      setLoadingStatus("Đang chuyển đổi sang Word...");
+      setLoadingStatus("Đang định dạng theo yêu cầu...");
 
       const response = await ai.models.generateContent({
         model: modelId,
         contents: { parts: parts },
-        config: { temperature: 0.2 } 
+        config: { temperature: 0.1 } // Low temperature for high fidelity
       });
 
       let text = response.text || "";
@@ -182,6 +218,72 @@ YÊU CẦU:
 
     } catch (err: any) {
       setError("Lỗi chuyển đổi: " + err.message);
+    } finally {
+      setIsLoading(false);
+      setLoadingStatus("");
+    }
+  };
+
+  const handleSolve = async () => {
+    if (!file && !pastedText) return setError("Vui lòng tải file hoặc dán nội dung (Ctrl+V).");
+    
+    setIsLoading(true);
+    setError(null);
+    setResultContent("");
+    setLoadingStatus("Đang phân tích và giải bài tập...");
+    setIsPreviewMode(false);
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: getApiKey() });
+      const modelId = "gemini-2.5-flash"; 
+      
+      const parts: any[] = [];
+      
+      // Add File or Text
+      if (file) {
+          const filePart = await fileToGenericPart(file);
+          parts.push(filePart);
+      } else if (pastedText) {
+          parts.push({ text: `Dưới đây là nội dung bài tập cần giải:\n${pastedText}` });
+      }
+
+      // Prompt for Solution
+      const prompt = `
+Bạn là một giáo viên giỏi và trợ lý học tập xuất sắc.
+Nhiệm vụ: Giải chi tiết và hướng dẫn cách làm cho các bài tập trong nội dung được cung cấp.
+
+YÊU CẦU:
+1. **Phân tích từng câu hỏi**: Trích dẫn lại câu hỏi (nếu ngắn gọn) rồi đưa ra lời giải.
+2. **Lời giải chi tiết**: Giải thích từng bước logic, công thức áp dụng, hoặc lý do chọn đáp án (đối với trắc nghiệm).
+3. **Định dạng HTML đẹp**: Sử dụng thẻ <h3> cho tiêu đề câu, <p> cho lời dẫn, <ul>/<ol> cho các bước giải. Dùng <b> để nhấn mạnh kết quả hoặc công thức quan trọng.
+4. **Toán học/Vật lý/Hóa học**:
+   - Sử dụng LaTeX kẹp giữa dấu $ (VD: $E = mc^2$) cho các công thức.
+   - **QUAN TRỌNG:** Viết công thức liền mạch trong dòng, KHÔNG xuống dòng ngắt quãng trừ khi cần thiết. Chỉ dùng dấu $, hạn chế dùng $$.
+5. **Cuối cùng - Bảng đáp án (BẮT BUỘC)**:
+   - Dựa trên kết quả giải chi tiết của bạn, **BẮT BUỘC** rút ra đáp án đúng (A, B, C, D) cho từng câu trắc nghiệm.
+   - Tổng hợp vào một **Bảng đáp án** (HTML Table) ở cuối cùng.
+   - Bảng này phải kẻ ô rõ ràng, chia thành 10 cột mỗi hàng (nếu nhiều câu).
+   - Nội dung mỗi ô ghi rõ số câu và đáp án theo định dạng ngắn gọn, IN ĐẬM: **1.A**, **2.B**, **3.C**.
+   - **LƯU Ý:** Không được để bảng trống. Bạn phải tự xác định đáp án đúng để điền vào.
+`;
+
+      parts.push({ text: prompt });
+
+      setLoadingStatus("Đang viết hướng dẫn giải...");
+
+      const response = await ai.models.generateContent({
+        model: modelId,
+        contents: { parts: parts },
+        config: { temperature: 0.4 } 
+      });
+
+      let text = response.text || "";
+      text = text.replace(/```html|```latex|```tex|```/g, "").trim();
+
+      setResultContent(text);
+
+    } catch (err: any) {
+      setError("Lỗi xử lý: " + err.message);
     } finally {
       setIsLoading(false);
       setLoadingStatus("");
@@ -202,6 +304,38 @@ YÊU CẦU:
     link.href = source;
     link.download = `Converted_${fileName.split('.')[0] || 'Document'}.doc`;
     link.click();
+  };
+
+  const handleCopy = () => {
+    let contentToCopy = resultContent;
+    if (contentEditableRef.current) {
+        contentToCopy = contentEditableRef.current.innerHTML;
+    }
+
+    if (!contentToCopy) {
+      alert("Không có nội dung để sao chép.");
+      return;
+    }
+
+    try {
+        const blob = new Blob([contentToCopy], { type: "text/html" });
+        const textBlob = new Blob([contentEditableRef.current?.innerText || resultContent], { type: "text/plain" });
+        const data = [new ClipboardItem({
+            ["text/html"]: blob,
+            ["text/plain"]: textBlob
+        })];
+
+        navigator.clipboard.write(data).then(() => {
+            alert("Đã sao chép nội dung thành công! Bạn có thể dán vào Word ngay.");
+        });
+    } catch (err) {
+        console.error("Lỗi khi sao chép:", err);
+        alert("Lỗi khi sao chép. Vui lòng thử lại.");
+    }
+  };
+
+  const handleContentChange = (e: React.FormEvent<HTMLDivElement>) => {
+     setResultContent(e.currentTarget.innerHTML);
   };
 
   return (
@@ -291,15 +425,16 @@ YÊU CẦU:
                 )}
               </div>
                 
-              {/* Action Button */}
+              {/* Action Buttons */}
               <div className="space-y-3 pt-6">
+                    {/* Button 1: Convert */}
                     <button
                       onClick={handleConvert}
                       disabled={isLoading || (!file && !pastedText)}
                       className={`w-full py-3.5 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all 
                         ${isLoading || (!file && !pastedText) ? 'bg-blue-950 text-blue-500 cursor-not-allowed border border-blue-800' : 'bg-white hover:bg-blue-50 text-blue-900'}`}
                     >
-                      {isLoading ? (
+                      {isLoading && loadingStatus.includes('định dạng') ? (
                         <>
                           <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                           <span className="text-sm">{loadingStatus}</span>
@@ -308,6 +443,26 @@ YÊU CẦU:
                         <>
                           <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
                           <span>Chuyển đổi ngay</span>
+                        </>
+                      )}
+                    </button>
+                    
+                    {/* Button 2: Solve */}
+                    <button
+                      onClick={handleSolve}
+                      disabled={isLoading || (!file && !pastedText)}
+                      className={`w-full py-3.5 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all 
+                        ${isLoading || (!file && !pastedText) ? 'bg-blue-950 text-blue-500 cursor-not-allowed border border-blue-800' : 'bg-yellow-500 hover:bg-yellow-400 text-white border border-yellow-500'}`}
+                    >
+                       {isLoading && loadingStatus.includes('giải') ? (
+                        <>
+                          <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                          <span className="text-sm">{loadingStatus}</span>
+                        </>
+                      ) : (
+                        <>
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                          <span>Tạo Hướng Dẫn Giải (Từ file)</span>
                         </>
                       )}
                     </button>
@@ -400,17 +555,36 @@ YÊU CẦU:
              ) : (
                 <>
                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-600" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6zM6 20V4h7v5h5v11H6z"/></svg>
-                   Kết quả chuyển đổi
+                   {isPreviewMode ? 'Xem trước kết quả (Chế độ đọc)' : 'Kết quả chuyển đổi (Chỉnh sửa được)'}
                 </>
              )}
           </h2>
           
           <div className="flex gap-2">
             {activeTab === 'home' && resultContent && (
-               <button onClick={handleDownload} className="px-5 py-2.5 text-sm font-bold text-white bg-green-600 hover:bg-green-700 rounded-lg shadow-sm flex items-center gap-2 transition-all">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                  Tải xuống Word
-               </button>
+               <>
+                 <button onClick={handleDownload} className="px-5 py-2.5 text-sm font-bold text-white bg-green-600 hover:bg-green-700 rounded-lg shadow-sm flex items-center gap-2 transition-all">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                    Tải xuống Word
+                 </button>
+                 <button onClick={handleCopy} className="px-5 py-2.5 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm flex items-center gap-2 transition-all">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" /></svg>
+                    Sao chép
+                 </button>
+                 <button onClick={() => setIsPreviewMode(!isPreviewMode)} className={`px-5 py-2.5 text-sm font-bold text-white rounded-lg shadow-sm flex items-center gap-2 transition-all ${isPreviewMode ? 'bg-gray-600 hover:bg-gray-700' : 'bg-purple-600 hover:bg-purple-700'}`}>
+                    {isPreviewMode ? (
+                        <>
+                           <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                           Chỉnh sửa
+                        </>
+                    ) : (
+                        <>
+                           <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                           Xem trước
+                        </>
+                    )}
+                 </button>
+               </>
             )}
           </div>
         </div>
@@ -419,8 +593,11 @@ YÊU CẦU:
         <div className="flex-1 overflow-y-auto p-0 custom-scrollbar flex justify-center bg-white">
            <style>{`
                 .generated-content { font-family: 'Be Vietnam Pro', 'Times New Roman', serif; }
-                .generated-content table { width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 16px; border: 1px solid #000; }
-                .generated-content th, .generated-content td { border: 1px solid #000; padding: 10px; }
+                .generated-content table { width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 16px; border: 2px solid #000; }
+                .generated-content th { border: 1px solid #000; padding: 10px; background-color: #003366; color: #ffffff; text-align: center; font-weight: bold; }
+                .generated-content td { border: 1px solid #000; padding: 10px; text-align: center; color: #000; font-weight: bold; background-color: #f8fafc; }
+                /* Custom MathJax spacing fix */
+                .generated-content mjx-container { display: inline-block !important; margin: 0 !important; }
               `}</style>
 
            {/* VIEW FOR SETTINGS */}
@@ -446,16 +623,37 @@ YÊU CẦU:
            {/* VIEW FOR CONVERSION RESULT */}
            {activeTab === 'home' && (
               <div className="w-full h-full bg-white p-4 md:p-8 animate-fade-in-up">
-                 {/* Conditionally render content editable div based on mode */}
-                <div 
-                    ref={contentEditableRef}
-                    contentEditable={true}
-                    suppressContentEditableWarning={true}
-                    className={`generated-content prose prose-slate max-w-none w-full text-lg leading-relaxed text-gray-900 outline-none focus:ring-2 ring-blue-100 rounded-lg p-8 border border-gray-200 shadow-sm`}
-                    style={{ minHeight: 'calc(100vh - 180px)' }}
-                    dangerouslySetInnerHTML={{ __html: resultContent }}
-                >
-                </div>
+                 
+                 {/* 
+                    MODE 1: EDIT MODE (ContentEditable) 
+                    Allows user to edit text directly. Updates 'resultContent' on input/blur.
+                 */}
+                 {!isPreviewMode && (
+                    <div 
+                        ref={contentEditableRef}
+                        contentEditable={true}
+                        suppressContentEditableWarning={true}
+                        onInput={handleContentChange}
+                        onBlur={handleContentChange}
+                        className={`generated-content prose prose-slate max-w-none w-full text-lg leading-relaxed text-gray-900 outline-none focus:ring-2 ring-blue-100 rounded-lg p-8 border border-gray-200 shadow-sm`}
+                        style={{ minHeight: 'calc(100vh - 180px)' }}
+                        dangerouslySetInnerHTML={{ __html: resultContent }}
+                    >
+                    </div>
+                 )}
+
+                 {/* 
+                    MODE 2: PREVIEW MODE (Read-only + MathJax)
+                    Renders HTML cleanly and triggers MathJax to format formulas.
+                 */}
+                 {isPreviewMode && (
+                    <div 
+                        className={`generated-content prose prose-slate max-w-none w-full text-lg leading-relaxed text-gray-900 p-8 border border-gray-100`}
+                        style={{ minHeight: 'calc(100vh - 180px)' }}
+                        dangerouslySetInnerHTML={{ __html: resultContent }}
+                    >
+                    </div>
+                 )}
 
                  {isLoading && (
                     <div className="mt-4 p-4 text-center text-blue-600 bg-blue-50 rounded-lg animate-pulse font-medium">
