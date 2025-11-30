@@ -2,9 +2,17 @@ import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { GoogleGenAI } from "@google/genai";
 
+// PDF.js typing augmentation
+declare global {
+  interface Window {
+    pdfjsLib: any;
+  }
+}
+
 const App = () => {
   // --- TABS STATE ---
   const [activeTab, setActiveTab] = useState<'home' | 'settings'>('home');
+  const [lastActiveTab, setLastActiveTab] = useState<'home' | 'settings'>('home');
 
   // --- API KEY STATE ---
   const [userApiKey, setUserApiKey] = useState<string>("");
@@ -20,7 +28,11 @@ const App = () => {
   const contentEditableRef = useRef<HTMLDivElement>(null); 
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [loadingStatus, setLoadingStatus] = useState<string>("");
+  const [progress, setProgress] = useState<number>(0); // 0 to 100
   const [error, setError] = useState<string | null>(null);
+  
+  // --- CONTROL REFS ---
+  const abortRef = useRef<boolean>(false); // To signal stop
 
   // --- PREVIEW MODE STATE ---
   const [isPreviewMode, setIsPreviewMode] = useState<boolean>(false);
@@ -63,6 +75,8 @@ const App = () => {
 
   // --- HELPER FUNCTIONS ---
 
+  const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
   const createWordHtml = (content: string, title: string) => {
     return "<html xmlns:o='urn:schemas-microsoft-com:office:office' " +
       "xmlns:w='urn:schemas-microsoft-com:office:word' " +
@@ -93,17 +107,175 @@ const App = () => {
     });
   };
 
+  // --- PDF PROCESSING LOGIC ---
+
+  const renderPdfPageToImage = async (pdfDoc: any, pageNum: number, scale = 2.0): Promise<string> => {
+    const page = await pdfDoc.getPage(pageNum);
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    await page.render({ canvasContext: context, viewport: viewport }).promise;
+    // Return base64 string without the prefix for Gemini
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+    return dataUrl.split(',')[1];
+  };
+
+  const processWithAI = async (parts: any[], mode: 'convert' | 'solve') => {
+      const ai = new GoogleGenAI({ apiKey: getApiKey() });
+      const modelId = "gemini-2.5-flash";
+
+      let systemInstruction = "";
+      if (mode === 'convert') {
+         systemInstruction = `
+Bạn là chuyên gia chuyển đổi tài liệu Toán - Lý - Hóa.
+Nhiệm vụ: Chép lại nội dung hình ảnh/văn bản đầu vào thành mã HTML sạch, chuẩn để dán vào Word.
+
+TUÂN THỦ 100% QUY TẮC:
+1. **Chính tả & Unicode**: Sửa lỗi chính tả tiếng Việt và lỗi font unicode.
+2. **Toán học & Khoa học**:
+   - Công thức toán BẮT BUỘC đặt trong dấu $...$ (LaTeX).
+   - Công thức trong dòng dùng $...$ (inline), KHÔNG dùng $$...$$ (block) và KHÔNG xuống dòng ngắt quãng.
+   - Ký tự Hy Lạp: ρ → \\rho, θ → \\theta, α → \\alpha...
+   - Đơn vị: $50\\;cm$, $300^\\circ C$, \\%.
+3. **Cấu trúc**:
+   - XÓA bảng đánh dấu Đúng/Sai, thay bằng danh sách a), b)...
+   - Bỏ dấu "*" thừa.
+   - Dùng thẻ <p> cho đoạn văn, <br> ngắt dòng.
+4. **Nguyên tắc**: Chỉ trả về HTML body content. Không Markdown.
+`;
+      } else {
+         systemInstruction = `
+Bạn là giáo viên giỏi.
+Nhiệm vụ: Giải chi tiết và hướng dẫn làm bài cho nội dung đầu vào.
+
+YÊU CẦU:
+1. Trích dẫn câu hỏi (ngắn gọn) rồi giải chi tiết.
+2. Giải thích logic, công thức.
+3. Dùng HTML (<h3>, <p>, <b>, <ul>).
+4. Toán/Lý/Hóa dùng LaTeX trong dấu $. Viết liền mạch, KHÔNG xuống dòng ngắt quãng.
+5. **QUAN TRỌNG**: Sau khi giải chi tiết xong, hãy tự rút ra đáp án đúng nhất cho từng câu và điền vào bảng tổng hợp cuối cùng. Tuyệt đối không được để bảng trống.
+6. **ĐỊNH DẠNG BẢNG ĐÁP ÁN**: Tạo bảng HTML 10 cột, nội dung dạng **1.A**, **2.B**. Tiêu đề bảng là "BẢNG ĐÁP ÁN TỔNG HỢP".
+`;
+      }
+
+      // Add prompt to parts
+      const requestParts = [...parts, { text: systemInstruction }];
+
+      const response = await ai.models.generateContent({
+        model: modelId,
+        contents: { parts: requestParts },
+        config: { temperature: mode === 'convert' ? 0.1 : 0.4 }
+      });
+
+      let text = response.text || "";
+      return text.replace(/```html|```latex|```tex|```/g, "").trim();
+  };
+
+  const processPdfInBatches = async (file: File, mode: 'convert' | 'solve') => {
+    try {
+      if (!window.pdfjsLib) throw new Error("Thư viện PDF chưa tải xong. Vui lòng đợi 3 giây rồi thử lại.");
+      
+      const arrayBuffer = await file.arrayBuffer();
+      const pdfDoc = await window.pdfjsLib.getDocument(arrayBuffer).promise;
+      const totalPages = pdfDoc.numPages;
+      const BATCH_SIZE = 3; // Process 3 pages at a time to avoid overload
+      const MAX_RETRIES = 5;
+      
+      for (let i = 1; i <= totalPages; i += BATCH_SIZE) {
+        // CHECK STOP CONDITION
+        if (abortRef.current) {
+            setLoadingStatus("Đã dừng bởi người dùng.");
+            break;
+        }
+
+        const startPage = i;
+        const endPage = Math.min(i + BATCH_SIZE - 1, totalPages);
+        
+        setProgress(Math.round(((i - 1) / totalPages) * 100));
+
+        // RETRY LOOP
+        let success = false;
+        let retryCount = 0;
+
+        while (!success && !abortRef.current && retryCount < MAX_RETRIES) {
+            try {
+                setLoadingStatus(`Đang xử lý trang ${startPage} - ${endPage} / ${totalPages}... ${retryCount > 0 ? `(Thử lại lần ${retryCount})` : ''}`);
+                
+                // Render pages in this batch to images
+                const imageParts = [];
+                for (let p = startPage; p <= endPage; p++) {
+                    const base64Image = await renderPdfPageToImage(pdfDoc, p);
+                    imageParts.push({ inlineData: { data: base64Image, mimeType: 'image/jpeg' } });
+                }
+
+                // Send this batch to AI
+                let batchResult = await processWithAI(imageParts, mode);
+                
+                // Check Abort BEFORE updating content
+                if (abortRef.current) {
+                    setLoadingStatus("Đã dừng. Bỏ qua kết quả cuối.");
+                    break;
+                }
+                
+                // Append result IMMEDIATELY for streaming effect
+                setResultContent(prev => prev + batchResult + "<br/><br/>");
+                
+                success = true; // Mark as success to exit retry loop
+            } catch (err) {
+                console.warn(`Batch ${startPage}-${endPage} failed:`, err);
+                retryCount++;
+                if (retryCount >= MAX_RETRIES) {
+                    setResultContent(prev => prev + `<br/><p style="color:red; font-weight:bold;">[LỖI: Không thể xử lý trang ${startPage}-${endPage} sau nhiều lần thử. Đang bỏ qua...]</p><br/>`);
+                    // We don't throw here, we just skip this chunk and continue to next
+                    success = true; 
+                } else {
+                    if (abortRef.current) break;
+                    setLoadingStatus(`Gặp lỗi kết nối. Đang đợi 5 giây để thử lại (Lần ${retryCount}/${MAX_RETRIES})...`);
+                    await wait(5000); // Wait 5 seconds before retrying
+                }
+            }
+        }
+      }
+
+      if (!abortRef.current) {
+          setProgress(100);
+      }
+
+    } catch (e: any) {
+      throw new Error(`Lỗi xử lý PDF: ${e.message}`);
+    }
+  };
+
   // --- HANDLERS ---
+
+  const handleStop = () => {
+    // Immediate feedback, no confirmation dialog
+    abortRef.current = true;
+    setLoadingStatus("Đang dừng... (Vui lòng đợi xử lý nốt phần hiện tại)");
+  };
+
+  const handleSettingsClick = () => {
+      setLastActiveTab(activeTab);
+      setActiveTab('settings');
+  };
+
+  const handleBackClick = () => {
+      setActiveTab(lastActiveTab);
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const selectedFile = e.target.files[0];
       setFile(selectedFile);
       setFileName(selectedFile.name);
-      setPastedText(""); // Clear pasted text if file is chosen
+      setPastedText(""); 
       setError(null);
       setResultContent("");
       setIsPreviewMode(false);
+      setProgress(0);
     }
   };
 
@@ -112,7 +284,6 @@ const App = () => {
     if (!items) return;
 
     for (let i = 0; i < items.length; i++) {
-      // Handle Image Paste
       if (items[i].type.indexOf("image") !== -1) {
         const blob = items[i].getAsFile();
         if (blob) {
@@ -122,14 +293,13 @@ const App = () => {
           setError(null);
           setResultContent("");
           setIsPreviewMode(false);
-          // Prevent default paste behavior if it's an image
+          setProgress(0);
           e.preventDefault();
           return;
         }
       }
     }
     
-    // Handle Text Paste (if no image found or intended)
     const target = e.target as HTMLElement;
     if (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA' && !target.isContentEditable) {
         const text = e.clipboardData?.getData("text");
@@ -140,150 +310,52 @@ const App = () => {
              setError(null);
              setResultContent("");
              setIsPreviewMode(false);
+             setProgress(0);
         }
     }
   };
 
-  const handleConvert = async () => {
+  const executeAction = async (mode: 'convert' | 'solve') => {
     if (!file && !pastedText) return setError("Vui lòng tải file hoặc dán nội dung (Ctrl+V).");
     
     setIsLoading(true);
+    abortRef.current = false; // RESET STOP FLAG
     setError(null);
-    setResultContent("");
-    setLoadingStatus("Đang phân tích và định dạng...");
+    setResultContent(""); 
+    setLoadingStatus("Đang khởi tạo...");
+    setProgress(0);
     setIsPreviewMode(false);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: getApiKey() });
-      const modelId = "gemini-2.5-flash"; 
-      
-      const parts: any[] = [];
-      
-      // Add File or Text
-      if (file) {
-          const filePart = await fileToGenericPart(file);
-          parts.push(filePart);
-      } else if (pastedText) {
-          parts.push({ text: `Dưới đây là nội dung văn bản cần xử lý:\n${pastedText}` });
+      // CASE 1: PDF FILE (Use Batching with Auto-Retry)
+      if (file && file.type === 'application/pdf') {
+         await processPdfInBatches(file, mode);
+      } 
+      // CASE 2: IMAGE OR TEXT (Single Request)
+      else {
+          setProgress(50);
+          setLoadingStatus("Đang gửi dữ liệu lên AI...");
+          const parts: any[] = [];
+          
+          if (file) {
+              const filePart = await fileToGenericPart(file);
+              parts.push(filePart);
+          } else if (pastedText) {
+              parts.push({ text: `Nội dung đầu vào:\n${pastedText}` });
+          }
+
+          const result = await processWithAI(parts, mode);
+          if (!abortRef.current) {
+              setResultContent(result);
+              setProgress(100);
+          }
       }
 
-      // Prompt updated based on user specific requests
-      const prompt = `
-Bạn là một chuyên gia chuyển đổi tài liệu, soạn thảo văn bản Toán - Lý - Hóa chuyên nghiệp.
-Nhiệm vụ: Chép lại nội dung đầu vào thành mã HTML sạch, chuẩn để dán vào Microsoft Word.
-
-TUÂN THỦ 100% CÁC QUY TẮC SAU (KHÔNG ĐƯỢC BỎ QUA):
-
-1. **Chính tả & Unicode**:
-   - Rà soát và tự động sửa lỗi chính tả tiếng Việt.
-   - Sửa các lỗi unicode character bị lỗi font.
-
-2. **Toán học & Khoa học (QUAN TRỌNG)**:
-   - Giữ nguyên nội dung gốc nhưng sửa các công thức toán bị lỗi và bắt buộc đặt trong cặp dấu $...$ (LaTeX).
-   - **ĐẶC BIỆT LƯU Ý:** Công thức toán nằm trong dòng văn bản phải viết liền mạch, **TUYỆT ĐỐI KHÔNG** được xuống dòng trước hoặc sau công thức. Chỉ dùng $...$ (inline math), **KHÔNG** dùng $$...$$ (block math) trừ khi công thức đó đứng riêng một mình một dòng.
-   - Ký tự Hy Lạp trong công thức vật lý:
-     ρ → \\rho, θ → \\theta, α → \\alpha, β → \\beta, Δ → \\Delta, μ → \\mu, λ → \\lambda...
-   - Ký hiệu: ◦C chuyển thành ^\\circ C (Ví dụ: $300^\\circ C$, $-23^\\circ C$). % chuyển thành \\%.
-   - Đơn vị đo: Thêm khoảng cách nhỏ (\\;) giữa số và đơn vị. Ví dụ: $50\\;cm$, $100\\;g$.
-   - Sửa định dạng số/tọa độ: 
-     Ví dụ: ($-2;0;0$) thành $(-2;0;0)$.
-     Ví dụ: *Oxy* thành $Oxy$.
-
-3. **Cấu trúc & Trình bày**:
-   - **XÓA BỎ HOÀN TOÀN** bảng đánh dấu kiểu (|Phát biểu|Đúng|Sai|) và các ký tự đánh dấu thừa (a), (b)... trong bảng đó.
-   - Thay thế bảng đó bằng danh sách xuống dòng với định dạng: a) Nội dung... hoặc A. Nội dung...
-   - Bỏ đi dấu "*" thừa xung quanh chữ (Ví dụ: *Câu 1* -> <b>Câu 1</b> hoặc chỉ Câu 1, không để dấu sao).
-   - Dữ liệu [XUỐNG DÒNG] hợp lý. Bỏ dòng trống thừa không có dữ liệu.
-   - Sử dụng thẻ <p> cho đoạn văn, <br> để ngắt dòng. Không dùng ký tự \\n.
-
-4. **Nguyên tắc**: 
-   - Không tự ý thêm hay bớt nội dung gốc (ngoại trừ việc xóa bảng Đúng/Sai thừa).
-   - Chỉ trả về nội dung đã xử lý dưới dạng HTML (thẻ p, b, i, br...). KHÔNG trả về Markdown (\`\`\`).
-`;
-
-      parts.push({ text: prompt });
-
-      setLoadingStatus("Đang định dạng theo yêu cầu...");
-
-      const response = await ai.models.generateContent({
-        model: modelId,
-        contents: { parts: parts },
-        config: { temperature: 0.1 } // Low temperature for high fidelity
-      });
-
-      let text = response.text || "";
-      text = text.replace(/```html|```latex|```tex|```/g, "").trim();
-
-      setResultContent(text);
-
     } catch (err: any) {
-      setError("Lỗi chuyển đổi: " + err.message);
-    } finally {
-      setIsLoading(false);
-      setLoadingStatus("");
-    }
-  };
-
-  const handleSolve = async () => {
-    if (!file && !pastedText) return setError("Vui lòng tải file hoặc dán nội dung (Ctrl+V).");
-    
-    setIsLoading(true);
-    setError(null);
-    setResultContent("");
-    setLoadingStatus("Đang phân tích và giải bài tập...");
-    setIsPreviewMode(false);
-
-    try {
-      const ai = new GoogleGenAI({ apiKey: getApiKey() });
-      const modelId = "gemini-2.5-flash"; 
-      
-      const parts: any[] = [];
-      
-      // Add File or Text
-      if (file) {
-          const filePart = await fileToGenericPart(file);
-          parts.push(filePart);
-      } else if (pastedText) {
-          parts.push({ text: `Dưới đây là nội dung bài tập cần giải:\n${pastedText}` });
+      if (!abortRef.current) {
+         setError("Lỗi: " + err.message);
       }
-
-      // Prompt for Solution
-      const prompt = `
-Bạn là một giáo viên giỏi và trợ lý học tập xuất sắc.
-Nhiệm vụ: Giải chi tiết và hướng dẫn cách làm cho các bài tập trong nội dung được cung cấp.
-
-YÊU CẦU:
-1. **Phân tích từng câu hỏi**: Trích dẫn lại câu hỏi (nếu ngắn gọn) rồi đưa ra lời giải.
-2. **Lời giải chi tiết**: Giải thích từng bước logic, công thức áp dụng, hoặc lý do chọn đáp án (đối với trắc nghiệm).
-3. **Định dạng HTML đẹp**: Sử dụng thẻ <h3> cho tiêu đề câu, <p> cho lời dẫn, <ul>/<ol> cho các bước giải. Dùng <b> để nhấn mạnh kết quả hoặc công thức quan trọng.
-4. **Toán học/Vật lý/Hóa học**:
-   - Sử dụng LaTeX kẹp giữa dấu $ (VD: $E = mc^2$) cho các công thức.
-   - **QUAN TRỌNG:** Viết công thức liền mạch trong dòng, KHÔNG xuống dòng ngắt quãng trừ khi cần thiết. Chỉ dùng dấu $, hạn chế dùng $$.
-5. **Cuối cùng - Bảng đáp án (BẮT BUỘC)**:
-   - Dựa trên kết quả giải chi tiết của bạn, **BẮT BUỘC** rút ra đáp án đúng (A, B, C, D) cho từng câu trắc nghiệm.
-   - Tổng hợp vào một **Bảng đáp án** (HTML Table) ở cuối cùng.
-   - Bảng này phải kẻ ô rõ ràng, chia thành 10 cột mỗi hàng (nếu nhiều câu).
-   - Nội dung mỗi ô ghi rõ số câu và đáp án theo định dạng ngắn gọn, IN ĐẬM: **1.A**, **2.B**, **3.C**.
-   - **LƯU Ý:** Không được để bảng trống. Bạn phải tự xác định đáp án đúng để điền vào.
-`;
-
-      parts.push({ text: prompt });
-
-      setLoadingStatus("Đang viết hướng dẫn giải...");
-
-      const response = await ai.models.generateContent({
-        model: modelId,
-        contents: { parts: parts },
-        config: { temperature: 0.4 } 
-      });
-
-      let text = response.text || "";
-      text = text.replace(/```html|```latex|```tex|```/g, "").trim();
-
-      setResultContent(text);
-
-    } catch (err: any) {
-      setError("Lỗi xử lý: " + err.message);
+      setProgress(0);
     } finally {
       setIsLoading(false);
       setLoadingStatus("");
@@ -295,7 +367,6 @@ YÊU CẦU:
     if (contentEditableRef.current) {
         contentToSave = contentEditableRef.current.innerHTML;
     }
-    
     if (!contentToSave) return;
 
     const sourceHTML = createWordHtml(contentToSave, "Converted Document");
@@ -355,7 +426,7 @@ YÊU CẦU:
           {/* SETTINGS VIEW BACK BUTTON */}
           {activeTab === 'settings' && (
               <button
-                onClick={() => setActiveTab('home')}
+                onClick={handleBackClick}
                 className="w-full mb-6 py-3 px-4 bg-blue-800 hover:bg-blue-700 text-white rounded-xl flex items-center gap-3 font-bold transition-all shadow-lg border border-blue-600"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -394,7 +465,9 @@ YÊU CẦU:
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                           </svg>
                           <p className="text-base font-medium text-green-300 truncate px-2">{fileName}</p>
-                          <p className="text-xs text-green-200/70">File đã sẵn sàng</p>
+                          <p className="text-xs text-green-200/70">
+                            {file.type === 'application/pdf' ? 'Đã nhận dạng PDF (Hỗ trợ chia nhỏ)' : 'File ảnh đã sẵn sàng'}
+                          </p>
                         </>
                       ) : pastedText ? (
                         <>
@@ -427,17 +500,24 @@ YÊU CẦU:
                 
               {/* Action Buttons */}
               <div className="space-y-3 pt-6">
+                    {/* Progress Bar (Only visible when loading) */}
+                    {isLoading && (
+                        <div className="w-full bg-blue-950 rounded-full h-2.5 mb-2 border border-blue-800">
+                            <div className="bg-green-500 h-2.5 rounded-full transition-all duration-500" style={{ width: `${progress}%` }}></div>
+                        </div>
+                    )}
+
                     {/* Button 1: Convert */}
                     <button
-                      onClick={handleConvert}
+                      onClick={() => executeAction('convert')}
                       disabled={isLoading || (!file && !pastedText)}
                       className={`w-full py-3.5 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all 
                         ${isLoading || (!file && !pastedText) ? 'bg-blue-950 text-blue-500 cursor-not-allowed border border-blue-800' : 'bg-white hover:bg-blue-50 text-blue-900'}`}
                     >
-                      {isLoading && loadingStatus.includes('định dạng') ? (
+                      {isLoading && loadingStatus ? (
                         <>
                           <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                          <span className="text-sm">{loadingStatus}</span>
+                          <span className="text-sm truncate max-w-[200px]">{loadingStatus}</span>
                         </>
                       ) : (
                         <>
@@ -449,15 +529,18 @@ YÊU CẦU:
                     
                     {/* Button 2: Solve */}
                     <button
-                      onClick={handleSolve}
+                      onClick={() => executeAction('solve')}
                       disabled={isLoading || (!file && !pastedText)}
                       className={`w-full py-3.5 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all 
-                        ${isLoading || (!file && !pastedText) ? 'bg-blue-950 text-blue-500 cursor-not-allowed border border-blue-800' : 'bg-yellow-500 hover:bg-yellow-400 text-white border border-yellow-500'}`}
+                        ${isLoading || (!file && !pastedText) 
+                            ? 'bg-blue-950 text-blue-500 cursor-not-allowed border border-blue-800' 
+                            : 'bg-yellow-500 hover:bg-yellow-400 text-white border border-yellow-500'}`}
                     >
-                       {isLoading && loadingStatus.includes('giải') ? (
+                       {isLoading && loadingStatus ? (
                         <>
-                          <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                          <span className="text-sm">{loadingStatus}</span>
+                           {/* Use same loading state but potentially different style if needed, currently sharing */}
+                           <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                           <span className="text-sm truncate max-w-[200px]">{loadingStatus}</span>
                         </>
                       ) : (
                         <>
@@ -526,7 +609,7 @@ YÊU CẦU:
         <div className="p-4 bg-blue-950 text-blue-400 text-xs border-t border-blue-800">
            {/* Settings Trigger */}
            <button 
-              onClick={() => setActiveTab('settings')}
+              onClick={handleSettingsClick}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg mb-3 transition-colors ${activeTab === 'settings' ? 'bg-blue-800 text-white' : 'hover:bg-blue-900 text-blue-300'}`}
            >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -561,6 +644,19 @@ YÊU CẦU:
           </h2>
           
           <div className="flex gap-2">
+            {isLoading && (
+                 <button 
+                    onClick={handleStop}
+                    className="px-4 py-2 text-sm font-bold text-white bg-red-600 hover:bg-red-700 rounded-lg shadow-sm flex items-center gap-2 transition-all"
+                 >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                    </svg>
+                    Dừng
+                 </button>
+            )}
+            
             {activeTab === 'home' && resultContent && (
                <>
                  <button onClick={handleDownload} className="px-5 py-2.5 text-sm font-bold text-white bg-green-600 hover:bg-green-700 rounded-lg shadow-sm flex items-center gap-2 transition-all">
