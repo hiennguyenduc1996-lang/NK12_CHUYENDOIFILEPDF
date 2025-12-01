@@ -10,7 +10,7 @@ declare global {
   }
 }
 
-type TabType = 'word' | 'latex' | 'settings';
+type TabType = 'word' | 'latex' | 'latex-shuffle' | 'settings';
 
 interface CustomFile {
     name: string;
@@ -35,6 +35,10 @@ const App = () => {
   const [pastedText, setPastedText] = useState<string>(""); // Store text if user pastes text
   const [fileName, setFileName] = useState<string>("");
   
+  // --- LATEX SHUFFLE STATE ---
+  const [shuffleCodes, setShuffleCodes] = useState<string>("101, 102, 103, 104");
+  const [disableTFShuffle, setDisableTFShuffle] = useState<boolean>(false);
+
   // --- RESULT STATE ---
   const [resultContent, setResultContent] = useState<string>("");
   const contentEditableRef = useRef<HTMLDivElement>(null); 
@@ -187,6 +191,341 @@ const App = () => {
       reader.onerror = () => reject(new Error("Lỗi khi đọc file."));
       reader.readAsDataURL(file);
     });
+  };
+
+  // --- SHUFFLING LOGIC (Fisher-Yates) ---
+  const shuffleArray = (array: any[]) => {
+      const newArr = [...array];
+      for (let i = newArr.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
+      }
+      return newArr;
+  };
+
+  // --- LATEX PARSING & SHUFFLING LOGIC ---
+  const parseLatexQuestions = (content: string) => {
+      // Clean comments to avoid regex issues, but be careful not to break structure
+      // For simplicity, we assume standard structure \begin{ex} ... \end{ex}
+      
+      const questions: { 
+          fullContent: string, 
+          type: 'TN' | 'TF' | 'TL', // TN: Trắc nghiệm 4, TF: Đúng sai, TL: Tự luận
+          hasChoice: boolean,
+          id: string
+      }[] = [];
+
+      // Regex to find \begin{ex} ... \end{ex} blocks (non-greedy)
+      const exRegex = /\\begin{ex}([\s\S]*?)\\end{ex}/g;
+      let match;
+      let count = 0;
+
+      while ((match = exRegex.exec(content)) !== null) {
+          const fullBlock = match[0];
+          const innerContent = match[1];
+          let type: 'TN' | 'TF' | 'TL' = 'TL';
+          let hasChoice = false;
+
+          if (innerContent.includes('\\choiceTF') || innerContent.includes('\\choiceTFt')) {
+              type = 'TF';
+          } else if (innerContent.includes('\\choice')) {
+              type = 'TN';
+              hasChoice = true;
+          } else if (innerContent.includes('\\shortans')) {
+              type = 'TL';
+          }
+
+          questions.push({
+              fullContent: fullBlock,
+              type,
+              hasChoice,
+              id: `q_${count++}`
+          });
+      }
+      return questions;
+  };
+
+  const shuffleLatexContent = (originalContent: string, codes: string[], disableTFShuffle: boolean) => {
+      const questions = parseLatexQuestions(originalContent);
+      
+      // Group questions
+      const groupTN = questions.filter(q => q.type === 'TN');
+      const groupTF = questions.filter(q => q.type === 'TF');
+      const groupTL = questions.filter(q => q.type === 'TL');
+
+      // Helper to process a single question (shuffle choices inside)
+      const processQuestion = (q: typeof questions[0]) => {
+          let content = q.fullContent;
+          const cmdTN = '\\choice';
+          const cmdTF = content.includes('\\choiceTFt') ? '\\choiceTFt' : '\\choiceTF';
+          
+          let targetCmd = '';
+          if (q.type === 'TN') targetCmd = cmdTN;
+          else if (q.type === 'TF') targetCmd = cmdTF;
+
+          if (targetCmd) {
+              const idx = content.indexOf(targetCmd);
+              if (idx !== -1) {
+                  const preCmd = content.substring(0, idx);
+                  let cursor = idx + targetCmd.length;
+                  
+                  // 1. Check for Optional Argument [...]
+                  let optionalArg = "";
+                  // Skip whitespace carefully
+                  while(cursor < content.length && /\s/.test(content[cursor])) cursor++;
+                  
+                  if (content[cursor] === '[') {
+                      const startOpt = cursor;
+                      while(cursor < content.length && content[cursor] !== ']') cursor++;
+                      if (cursor < content.length) {
+                          cursor++; // Include ']'
+                          optionalArg = content.substring(startOpt, cursor);
+                      }
+                  }
+
+                  // 2. Extract Options {A}{B}{C}{D}
+                  const options: string[] = [];
+                  let optCount = 0;
+                  // We loop until we fail to find a starting brace or hit 4 (standard)
+                  // Using brace counting to handle nested braces (TikZ, etc.)
+                  
+                  while (optCount < 4) {
+                       // Skip whitespace
+                       while(cursor < content.length && /\s/.test(content[cursor])) cursor++;
+                       
+                       if (content[cursor] === '{') {
+                           let braceCount = 1;
+                           const startContent = cursor;
+                           cursor++;
+                           while(cursor < content.length && braceCount > 0) {
+                               if (content[cursor] === '{') braceCount++;
+                               else if (content[cursor] === '}') braceCount--;
+                               cursor++;
+                           }
+                           // Extracted option (including braces)
+                           let opt = content.substring(startContent, cursor);
+                           
+                           // --- OPTIONAL: CLEAN A., B., C., D. prefix if present for cleaner shuffle ---
+                           // (User asked to remove them in AI prompt, safe to clean here too)
+                           // Remove outer braces first to check
+                           let inner = opt.substring(1, opt.length - 1);
+                           let hasTrue = false;
+                           if (inner.trim().startsWith('\\True')) {
+                               hasTrue = true;
+                               inner = inner.replace('\\True', '').trim();
+                           }
+                           // Regex to remove "A.", "a)", "1." at start of content
+                           inner = inner.replace(/^[A-Da-d][.)]\s*/, '');
+                           opt = `{${hasTrue ? '\\True ' : ''}${inner}}`;
+                           // ---------------------------------------------------------------------------
+
+                           options.push(opt);
+                           optCount++;
+                       } else {
+                           // No more braces immediately found -> break
+                           break;
+                       }
+                  }
+
+                  const postCmd = content.substring(cursor);
+
+                  // 3. Shuffle logic
+                  if (options.length > 0) {
+                      let shuffledOpts = options;
+                      if (q.type === 'TN') {
+                          shuffledOpts = shuffleArray(options);
+                      } else if (q.type === 'TF' && !disableTFShuffle) {
+                          shuffledOpts = shuffleArray(options);
+                      }
+                      
+                      // 4. Reconstruct
+                      content = `${preCmd}${targetCmd}${optionalArg}\n${shuffledOpts.join('\n')}${postCmd}`;
+                  }
+              }
+          }
+          return content;
+      };
+
+      let finalLatex = `\\documentclass[12pt,a4paper]{article}
+\\usepackage[light,condensed,math]{anttor}
+\\everymath{\\rm}
+%Các gói
+%\\usepackage{fourier}
+%\\usepackage{yhmath}
+\\usepackage{amsmath,amssymb,grffile,makecell,fancyhdr,enumerate,arcs,physics,tasks,mathrsfs,graphics}
+\\usepackage{tikz,tikz-3dplot,tkz-euclide,tkz-tab,tkz-linknodes,tabvar,pgfplots,esvect}
+\\usepackage[top=1.2cm, bottom=1.2cm, left=1.5cm, right=1.5cm]{geometry}
+\\usepackage[hidelinks,unicode]{hyperref}
+\\usepackage[utf8]{vietnam}
+\\usepackage[dethi]{ex_test}
+%
+%Các thư viện
+\\usetikzlibrary{shapes.geometric,shadings,calc,snakes,patterns,arrows,intersections,angles,backgrounds,quotes}
+\\usetikzlibrary{decorations.markings}
+\\usetikzlibrary{decorations.pathmorphing,patterns}
+\\usetikzlibrary{circuits}
+\\usetikzlibrary{circuits.ee.IEC}
+\\usepackage[siunitx]{circuitikz}
+\\tikzset{middlearrow/.style={decoration={markings,mark= at position 0.5 with {\\arrow{#1}},},postaction={decorate}}}
+\\renewcommand{\\baselinestretch}{0.85}% Lệnh dãn dòng
+%Các thư viện
+\\usetikzlibrary{shapes.geometric,shadings,calc,snakes,patterns,arrows,intersections,angles,backgrounds,quotes}
+%\\usetkzobj{all}
+\\usepgfplotslibrary{fillbetween}
+\\pgfplotsset{compat=newest}
+%
+%Một số lệnh tắt
+\\def\\vec{\\overrightarrow}
+\\newcommand{\\hoac}[1]{\\left[\\begin{aligned}#1\\end{aligned}\\right.}
+\\newcommand{\\heva}[1]{\\left\\{\\begin{aligned}#1\\end{aligned}\\right.}
+\\newcommand{\\hetde}{\\centerline{\\rule[0.5ex]{2cm}{1pt} HẾT \\rule[0.5ex]{2cm}{1pt}}}
+%
+%Tiêu đề
+\\newcommand{\\tentruong}{}
+\\newcommand{\\tengv}{}
+\\newcommand{\\tenkythi}{ĐỀ ÔN TẬP THI HỌC KÌ 1}
+\\newcommand{\\tenmonthi}{MÔN: VẬT LÍ}
+\\newcommand{\\thoigian}{50}
+\\newcommand{\\tieude}[3]{
+\\noindent
+%Trái
+\\begin{minipage}[t]{8cm}
+\\centerline{\\textbf{\\fontsize{13}{0}\\selectfont \\tentruong}}
+\\centerline{\\textbf{\\fontsize{13}{0}\\selectfont \\tengv}}
+\\centerline{(\\textit{Đề thi có #1\\ trang})}
+\\end{minipage}\\hspace{1.5cm}
+%Phải
+\\begin{minipage}[t]{9cm}
+\\centerline{\\textbf{\\fontsize{13}{0}\\selectfont \\tenkythi}}
+\\centerline{\\textbf{\\fontsize{13}{0}\\selectfont \\tenmonthi}}
+\\centerline{\\textit{\\fontsize{12}{0}\\selectfont Thời gian làm bài \\thoigian\\;phút}}
+\\end{minipage}
+\\begin{minipage}[t]{10cm}
+\\textbf{Họ và tên thí sinh: }{\\tiny\\dotfill}
+\\end{minipage}
+\\begin{minipage}[b]{8cm}
+\\hspace*{4cm}\\fbox{\\bf Mã đề thi #3}
+\\end{minipage}\\vspace{3pt}
+}
+%Lệnh dùng cho trắc nghiệm chấm tay
+\\newcommand*\\circletext[1]{\\tikz[baseline=(char.base)]{
+            \\node[shape=circle,draw,inner sep=0.5pt] (char) {\\fontsize{10}{0}\\selectfont#1};}}
+\\newcommand*\\fillcircletext[1]{\\tikz[baseline=(char.base)]{
+            \\node[shape=circle,draw,fill=black,inner sep=0.6pt] (char) {\\fontsize{10}{0}\\selectfont#1};}}
+%chân trang
+\\newcommand{\\chantrang}[2]{\\rfoot{Trang \\thepage/#1 $-$ Mã đề #2}}
+%Tùy chỉnh ex_test
+\\renewtheorem{ex}{\\color{black}\\selectfont\\bfseries Câu}
+\\renewcommand{\\FalseEX}{\\stepcounter{dapan}{\\noindent{\\textbf{\\Alph{dapan}.}}}}
+%\\fontdimen2\\font=3.5pt% Lệnh tăng giảm khoảng các các chữ
+\\pagestyle{fancy}
+\\fancyhf{}
+\\renewcommand{\\headrulewidth}{0pt}
+\\newcommand{\\tieudea}[2]{\\noindent\\textbf{PHẦN #1.} Thí sinh trả lời từ câu 1 đến câu #2. Mỗi câu hỏi thí sinh chỉ chọn một phương án.}
+\\newcommand{\\tieudeb}[2]{\\noindent\\textbf{PHẦN #1.} Thí sinh trả lời từ câu 1 đến câu #2. Mỗi ý \\textbf{a), b), c), d)} ở mỗi câu hỏi, thí sinh chọn \\textbf{đúng} hoặc \\textbf{sai}.}
+\\newcommand{\\tieudec}[2]{\\noindent\\textbf{PHẦN #1.} Thí sinh trả lời từ câu 1 đến câu #2.}
+\\newcommand{\\tieuded}[1]{\\noindent\\textbf{PHẦN #1. PHẦN TỰ LUẬN}}
+\\newenvironment{dapanMyLT}{}{}
+%\\usepackage{verbatim}\\renewenvironment{dapanMyLT}{\\comment}{\\endcomment}%Ẩn đáp án
+\\begin{document}
+`;
+
+      codes.forEach((code) => {
+          const shuffledTN = shuffleArray(groupTN).map(processQuestion);
+          const shuffledTF = shuffleArray(groupTF).map(processQuestion);
+          const shuffledTL = shuffleArray(groupTL).map(processQuestion);
+          
+          finalLatex += `
+\\tieude{\\pageref{${code}}}{18}{${code}}
+\\chantrang{\\pageref{${code}}}{${code}}
+\\setcounter{page}{1}
+
+% --- PHẦN 1: TRẮC NGHIỆM ---
+\\tieudea{I}{${shuffledTN.length}}
+\\setcounter{ex}{0}
+\\Opensolutionfile{ansbook}[ansbookMyLTTN${code}]
+\\Opensolutionfile{ans}[ansMyLTTN${code}]
+${shuffledTN.join('\n')}
+\\Closesolutionfile{ans}
+\\Closesolutionfile{ansbook}
+
+% --- PHẦN 2: ĐÚNG SAI ---
+\\tieudeb{II}{${shuffledTF.length}}
+\\setcounter{ex}{0}
+\\Opensolutionfile{ansbook}[ansbookMyLTTF${code}]
+\\Opensolutionfile{ans}[ansMyLTTF${code}]
+${shuffledTF.join('\n')}
+\\Closesolutionfile{ans}
+\\Closesolutionfile{ansbook}
+
+% --- PHẦN 3: TỰ LUẬN/NGẮN ---
+\\tieuded{III}
+\\setcounter{ex}{0}
+\\Opensolutionfile{ansbook}[ansbookMyLTTL${code}]
+\\Opensolutionfile{ans}[ansMyLTTL${code}]
+${shuffledTL.join('\n')}
+\\Closesolutionfile{ans}
+\\Closesolutionfile{ansbook}
+
+\\hetde
+\\label{${code}}
+\\newpage
+`;
+      });
+
+      // --- CREATE ANSWER KEYS FOR ALL CODES ---
+      finalLatex += `
+\\setcounter{page}{1}
+\\rfoot{Trang \\thepage $-$ Đáp án các mã đề}
+\\foreach\\i in {${codes.join(',')}}{
+\\begin{center}
+\\bf ĐÁP ÁN PHẦN TRẮC NGHIỆM 4 PHƯƠNG ÁN - MÃ ĐỀ \\i\\vspace{12pt}
+\\inputansbox[1]{9}{ansMyLTTN\\i}
+\\bf ĐÁP ÁN PHẦN TRẮC NGHIỆM ĐÚNG SAI
+\\inputansbox[2]{2}{ansMyLTTF\\i}
+\\bf ĐÁP ÁN PHẦN TỰ LUẬN
+\\inputansbox[3]{6}{ansMyLTTL\\i}
+\\end{center}
+}
+\\end{document}
+`;
+      
+      return finalLatex;
+  };
+
+  const executeLatexShuffle = async () => {
+      if (!file && !pastedText) return setError("Vui lòng tải file .tex hoặc dán nội dung.");
+      
+      setIsLoading(true);
+      setError(null);
+      setLoadingStatus("Đang đọc file...");
+      
+      try {
+          let content = "";
+          if (file) {
+              content = await file.text();
+          } else {
+              content = pastedText;
+          }
+
+          if (!content) throw new Error("File rỗng.");
+          
+          setLoadingStatus("Đang phân tích và trộn đề...");
+          await wait(500); // UI feel
+
+          const codes = shuffleCodes.split(',').map(c => c.trim()).filter(c => c);
+          if (codes.length === 0) throw new Error("Vui lòng nhập ít nhất 1 mã đề.");
+
+          const finalLatex = shuffleLatexContent(content, codes, disableTFShuffle);
+          
+          setResultContent(finalLatex);
+          setLoadingStatus("");
+          setProgress(100);
+      } catch (err: any) {
+          setError(err.message);
+      } finally {
+          setIsLoading(false);
+      }
   };
 
   // --- PDF PROCESSING LOGIC ---
@@ -588,7 +927,7 @@ YÊU CẦU:
 
   const handleTabChange = (newTab: TabType) => {
       // Clear content when switching contexts to avoid format mismatch
-      if ((newTab === 'word' && activeTab === 'latex') || (newTab === 'latex' && activeTab === 'word')) {
+      if (newTab !== activeTab && newTab !== 'settings') {
           setResultContent("");
           setFile(null);
           setFileName("");
@@ -826,7 +1165,7 @@ YÊU CẦU:
           {/* Header */}
           <div className="mb-8 flex-shrink-0">
              <h1 className="text-xl font-bold tracking-tight text-white/90 uppercase leading-snug">
-               CHUYỂN ĐỔI FILE PDF VÀ ẢNH SANG WORD VÀ LATEX
+               CÔNG CỤ HỖ TRỢ NK12 - TIẾNG ANH
              </h1>
           </div>
 
@@ -842,11 +1181,11 @@ YÊU CẦU:
                 Quay lại
               </button>
           ) : (
-             <div className="flex gap-3 mb-6">
+             <div className="grid grid-cols-3 gap-2 mb-6">
                 {/* WORD TAB BUTTON */}
                 <button
                     onClick={() => handleTabChange('word')}
-                    className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all ${activeTab === 'word' ? 'bg-white text-blue-900 shadow-lg' : 'bg-blue-800/50 text-blue-200 hover:bg-blue-800 hover:text-white'}`}
+                    className={`py-2 px-1 rounded-lg flex flex-col items-center justify-center gap-1 font-bold text-[10px] transition-all ${activeTab === 'word' ? 'bg-white text-blue-900 shadow-lg' : 'bg-blue-800/50 text-blue-200 hover:bg-blue-800 hover:text-white'}`}
                 >
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                     Word
@@ -854,23 +1193,31 @@ YÊU CẦU:
                 {/* LATEX TAB BUTTON */}
                 <button
                     onClick={() => handleTabChange('latex')}
-                    className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all ${activeTab === 'latex' ? 'bg-white text-blue-900 shadow-lg' : 'bg-blue-800/50 text-blue-200 hover:bg-blue-800 hover:text-white'}`}
+                    className={`py-2 px-1 rounded-lg flex flex-col items-center justify-center gap-1 font-bold text-[10px] transition-all ${activeTab === 'latex' ? 'bg-white text-blue-900 shadow-lg' : 'bg-blue-800/50 text-blue-200 hover:bg-blue-800 hover:text-white'}`}
                 >
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
                     LaTeX
                 </button>
+                {/* LATEX SHUFFLE BUTTON */}
+                <button
+                    onClick={() => handleTabChange('latex-shuffle')}
+                    className={`py-2 px-1 rounded-lg flex flex-col items-center justify-center gap-1 font-bold text-[10px] transition-all ${activeTab === 'latex-shuffle' ? 'bg-white text-blue-900 shadow-lg' : 'bg-blue-800/50 text-blue-200 hover:bg-blue-800 hover:text-white'}`}
+                >
+                   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                    Trộn Đề
+                </button>
              </div>
           )}
 
-          {/* === CONTENT FOR CONVERTER (WORD OR LATEX) === */}
-          {(activeTab === 'word' || activeTab === 'latex') && (
+          {/* === CONTENT FOR CONVERTER (WORD OR LATEX OR SHUFFLE) === */}
+          {activeTab !== 'settings' && (
             <div className="space-y-6 animate-fade-in-up">
               
               {/* Step 1: Upload / Paste */}
               <div>
                 <div className="flex items-center gap-2 mb-2 text-blue-200 uppercase text-xs font-bold tracking-wider">
                   <span className="w-5 h-5 rounded-full border border-blue-300 flex items-center justify-center text-[10px]">1</span>
-                  Tải lên hoặc Dán nội dung
+                  {activeTab === 'latex-shuffle' ? 'Tải lên File LaTeX gốc (.tex)' : 'Tải lên hoặc Dán nội dung'}
                 </div>
                 
                 <label className="block w-full cursor-pointer group mb-3">
@@ -881,7 +1228,7 @@ YÊU CẦU:
                     <input 
                       type="file" 
                       className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                      accept=".pdf,.png,.jpg,.jpeg"
+                      accept={activeTab === 'latex-shuffle' ? ".tex" : ".pdf,.png,.jpg,.jpeg"}
                       onChange={handleFileChange}
                     />
                     <div className="text-center space-y-2 pointer-events-none">
@@ -892,7 +1239,7 @@ YÊU CẦU:
                           </svg>
                           <p className="text-base font-medium text-green-300 truncate px-2">{fileName}</p>
                           <p className="text-xs text-green-200/70">
-                            {file.type === 'application/pdf' ? 'Đã nhận dạng PDF (Hỗ trợ chia nhỏ)' : 'File ảnh đã sẵn sàng'}
+                            {file.type === 'application/pdf' ? 'Đã nhận dạng PDF' : activeTab === 'latex-shuffle' ? 'File TeX sẵn sàng' : 'File ảnh đã sẵn sàng'}
                           </p>
                         </>
                       ) : pastedText ? (
@@ -908,14 +1255,45 @@ YÊU CẦU:
                           <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 mx-auto text-blue-300/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                           </svg>
-                          <p className="text-base font-medium text-blue-100">Chọn file PDF/Ảnh</p>
-                          <p className="text-xs text-blue-300">Hoặc ấn <span className="font-bold text-white bg-blue-800 px-1 rounded">Ctrl + V</span> để dán ảnh/chữ trực tiếp</p>
+                          <p className="text-base font-medium text-blue-100">{activeTab === 'latex-shuffle' ? 'Chọn file .tex' : 'Chọn file PDF/Ảnh'}</p>
+                          <p className="text-xs text-blue-300">Hoặc ấn <span className="font-bold text-white bg-blue-800 px-1 rounded">Ctrl + V</span> để dán</p>
                         </>
                       )}
                     </div>
                   </div>
                 </label>
               </div>
+
+              {/* Extra Inputs for Shuffle */}
+              {activeTab === 'latex-shuffle' && (
+                  <div>
+                      <div className="flex items-center gap-2 mb-2 text-blue-200 uppercase text-xs font-bold tracking-wider">
+                          <span className="w-5 h-5 rounded-full border border-blue-300 flex items-center justify-center text-[10px]">2</span>
+                          Cấu hình trộn
+                      </div>
+                      <div className="space-y-3">
+                          <div>
+                              <label className="text-xs text-blue-300 block mb-1">Mã đề (cách nhau dấu phẩy)</label>
+                              <input 
+                                  type="text" 
+                                  value={shuffleCodes}
+                                  onChange={(e) => setShuffleCodes(e.target.value)}
+                                  className="w-full bg-blue-800/30 border border-blue-600 rounded-lg p-2 text-white text-sm"
+                                  placeholder="101, 102, 103"
+                              />
+                          </div>
+                          <label className="flex items-center gap-2 text-sm text-white cursor-pointer select-none">
+                              <input 
+                                  type="checkbox" 
+                                  checked={disableTFShuffle}
+                                  onChange={(e) => setDisableTFShuffle(e.target.checked)}
+                                  className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              />
+                              Không trộn câu hỏi Đúng/Sai (Giữ thứ tự a,b,c,d)
+                          </label>
+                      </div>
+                  </div>
+              )}
                 
               {/* Action Buttons */}
               <div className="space-y-3 pt-6">
@@ -926,47 +1304,70 @@ YÊU CẦU:
                         </div>
                     )}
 
-                    {/* Button 1: Convert */}
-                    <button
-                      onClick={() => executeAction('convert')}
-                      disabled={isLoading || (!file && !pastedText)}
-                      className={`w-full py-3.5 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all 
-                        ${isLoading || (!file && !pastedText) ? 'bg-blue-950 text-blue-500 cursor-not-allowed border border-blue-800' : 'bg-white hover:bg-blue-50 text-blue-900'}`}
-                    >
-                      {isLoading && loadingStatus ? (
+                    {activeTab === 'latex-shuffle' ? (
+                         <button
+                            onClick={executeLatexShuffle}
+                            disabled={isLoading || (!file && !pastedText)}
+                            className={`w-full py-3.5 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all 
+                                ${isLoading || (!file && !pastedText) ? 'bg-blue-950 text-blue-500 cursor-not-allowed border border-blue-800' : 'bg-yellow-500 hover:bg-yellow-400 text-blue-900 border border-yellow-500'}`}
+                        >
+                            {isLoading ? (
+                                <>
+                                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                    <span>{loadingStatus || "Đang trộn..."}</span>
+                                </>
+                            ) : (
+                                <>
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
+                                    <span>Trộn Đề Ngay</span>
+                                </>
+                            )}
+                        </button>
+                    ) : (
                         <>
-                          <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                          <span className="text-sm truncate max-w-[200px]">{loadingStatus}</span>
+                            {/* Button 1: Convert */}
+                            <button
+                            onClick={() => executeAction('convert')}
+                            disabled={isLoading || (!file && !pastedText)}
+                            className={`w-full py-3.5 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all 
+                                ${isLoading || (!file && !pastedText) ? 'bg-blue-950 text-blue-500 cursor-not-allowed border border-blue-800' : 'bg-white hover:bg-blue-50 text-blue-900'}`}
+                            >
+                            {isLoading && loadingStatus ? (
+                                <>
+                                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                <span className="text-sm truncate max-w-[200px]">{loadingStatus}</span>
+                                </>
+                            ) : (
+                                <>
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                <span>Chuyển đổi sang {activeTab === 'word' ? 'Word' : 'LaTeX'}</span>
+                                </>
+                            )}
+                            </button>
+                            
+                            {/* Button 2: Solve */}
+                            <button
+                            onClick={() => executeAction('solve')}
+                            disabled={isLoading || (!file && !pastedText)}
+                            className={`w-full py-3.5 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all 
+                                ${isLoading || (!file && !pastedText) 
+                                    ? 'bg-blue-950 text-blue-500 cursor-not-allowed border border-blue-800' 
+                                    : 'bg-yellow-500 hover:bg-yellow-400 text-blue-900 border border-yellow-500'}`}
+                            >
+                            {isLoading && loadingStatus ? (
+                                <>
+                                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                <span className="text-sm truncate max-w-[200px]">{loadingStatus}</span>
+                                </>
+                            ) : (
+                                <>
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                <span>Tạo Hướng Dẫn Giải (Từ file)</span>
+                                </>
+                            )}
+                            </button>
                         </>
-                      ) : (
-                        <>
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                          <span>Chuyển đổi sang {activeTab === 'word' ? 'Word' : 'LaTeX'}</span>
-                        </>
-                      )}
-                    </button>
-                    
-                    {/* Button 2: Solve */}
-                    <button
-                      onClick={() => executeAction('solve')}
-                      disabled={isLoading || (!file && !pastedText)}
-                      className={`w-full py-3.5 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all 
-                        ${isLoading || (!file && !pastedText) 
-                            ? 'bg-blue-950 text-blue-500 cursor-not-allowed border border-blue-800' 
-                            : 'bg-yellow-500 hover:bg-yellow-400 text-blue-900 border border-yellow-500'}`}
-                    >
-                       {isLoading && loadingStatus ? (
-                        <>
-                           <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                           <span className="text-sm truncate max-w-[200px]">{loadingStatus}</span>
-                        </>
-                      ) : (
-                        <>
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                          <span>Tạo Hướng Dẫn Giải (Từ file)</span>
-                        </>
-                      )}
-                    </button>
+                    )}
                 </div>
 
             </div>
@@ -1116,10 +1517,12 @@ YÊU CẦU:
                 <>
                    {activeTab === 'word' ? (
                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-600" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6zM6 20V4h7v5h5v11H6z"/></svg>
-                   ) : (
+                   ) : activeTab === 'latex' ? (
                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
+                   ) : (
+                       <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                    )}
-                   {isPreviewMode ? 'Xem trước kết quả (Chế độ đọc)' : `Kết quả ${activeTab === 'word' ? 'Word (HTML)' : 'LaTeX'} (Chỉnh sửa được)`}
+                   {isPreviewMode ? 'Xem trước kết quả (Chế độ đọc)' : `Kết quả ${activeTab === 'word' ? 'Word' : activeTab === 'latex-shuffle' ? 'Trộn Đề' : 'LaTeX'} (Chỉnh sửa được)`}
                 </>
              )}
           </h2>
@@ -1138,15 +1541,15 @@ YÊU CẦU:
                  </button>
             )}
             
-            {(activeTab === 'word' || activeTab === 'latex') && resultContent && (
+            {(activeTab === 'word' || activeTab === 'latex' || activeTab === 'latex-shuffle') && resultContent && (
                <>
                  <button onClick={handleDownload} className="px-5 py-2.5 text-sm font-bold text-white bg-green-600 hover:bg-green-700 rounded-lg shadow-sm flex items-center gap-2 transition-all">
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                     {activeTab === 'word' ? 'Tải xuống Word' : 'Tải xuống .Tex'}
                  </button>
                  
-                 {/* OVERLEAF BUTTON (Only show in LaTeX Tab) */}
-                 {activeTab === 'latex' && (
+                 {/* OVERLEAF BUTTON (Only show in LaTeX/Shuffle Tab) */}
+                 {(activeTab === 'latex' || activeTab === 'latex-shuffle') && (
                      <button onClick={handleOpenOverleaf} className="px-5 py-2.5 text-sm font-bold text-white bg-teal-600 hover:bg-teal-700 rounded-lg shadow-sm flex items-center gap-2 transition-all">
                         <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
                            <path d="M12 0c-6.627 0-12 5.373-12 12s5.373 12 12 12 12-5.373 12-12-5.373-12-12-12zm0 2c5.514 0 10 4.486 10 10s-4.486 10-10 10-10-4.486-10-10 4.486-10 10-10zm-1.5 5l-4.5 9h3l1.5-3.5 1.5 3.5h3l-4.5-9h-3zm1.5 1.5l2 5h-4l2-5z"/>
@@ -1209,7 +1612,7 @@ YÊU CẦU:
            )}
 
            {/* VIEW FOR CONVERSION RESULT (WORD OR LATEX) */}
-           {(activeTab === 'word' || activeTab === 'latex') && (
+           {activeTab !== 'settings' && (
               <div className="w-full h-full bg-white p-4 md:p-8 animate-fade-in-up">
                  
                  {/* 
@@ -1222,7 +1625,7 @@ YÊU CẦU:
                         suppressContentEditableWarning={true}
                         onInput={handleContentChange}
                         onBlur={handleContentChange}
-                        className={`generated-content prose prose-slate max-w-none w-full text-lg leading-relaxed text-gray-900 outline-none focus:ring-2 ring-blue-100 rounded-lg p-8 border border-gray-200 shadow-sm ${activeTab === 'latex' ? 'font-mono text-sm whitespace-pre-wrap' : ''}`}
+                        className={`generated-content prose prose-slate max-w-none w-full text-lg leading-relaxed text-gray-900 outline-none focus:ring-2 ring-blue-100 rounded-lg p-8 border border-gray-200 shadow-sm ${activeTab === 'latex' || activeTab === 'latex-shuffle' ? 'font-mono text-sm whitespace-pre-wrap' : ''}`}
                         style={{ minHeight: 'calc(100vh - 180px)' }}
                         dangerouslySetInnerHTML={{ __html: resultContent }}
                     >
@@ -1235,7 +1638,7 @@ YÊU CẦU:
                  */}
                  {isPreviewMode && (
                     <div 
-                        className={`generated-content prose prose-slate max-w-none w-full text-lg leading-relaxed text-gray-900 p-8 border border-gray-100 ${activeTab === 'latex' ? 'font-mono text-sm whitespace-pre-wrap' : ''}`}
+                        className={`generated-content prose prose-slate max-w-none w-full text-lg leading-relaxed text-gray-900 p-8 border border-gray-100 ${activeTab === 'latex' || activeTab === 'latex-shuffle' ? 'font-mono text-sm whitespace-pre-wrap' : ''}`}
                         style={{ minHeight: 'calc(100vh - 180px)' }}
                         dangerouslySetInnerHTML={{ __html: resultContent }}
                     >
