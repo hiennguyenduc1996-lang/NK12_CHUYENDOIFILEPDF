@@ -305,8 +305,7 @@ const App = () => {
                            // Extracted option (including braces)
                            let opt = content.substring(startContent, cursor);
                            
-                           // --- OPTIONAL: CLEAN A., B., C., D. prefix if present for cleaner shuffle ---
-                           // (User asked to remove them in AI prompt, safe to clean here too)
+                           // --- CLEAN A., B., C., D. prefix if present for cleaner shuffle ---
                            // Remove outer braces first to check
                            let inner = opt.substring(1, opt.length - 1);
                            let hasTrue = false;
@@ -1192,7 +1191,7 @@ YÊU CẦU:
           {/* Header */}
           <div className="mb-8 flex-shrink-0">
              <h1 className="text-xl font-bold tracking-tight text-white/90 uppercase leading-snug">
-               CHUYỂN ĐỔI FILE PDF, ẢNH SANG WORD VÀ LATEX
+               CÔNG CỤ HỖ TRỢ NK12 - TIẾNG ANH
              </h1>
           </div>
 
@@ -1423,12 +1422,18 @@ YÊU CẦU:
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
                         Google Gemini API Key
                     </label>
+                    
+                    {/* Key Status Indicator */}
+                    <div className={`text-[10px] font-bold mb-2 px-2 py-1 rounded inline-block border ${userApiKey ? 'bg-green-500/20 text-green-300 border-green-500/30' : 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30'}`}>
+                        {userApiKey ? "● Đang sử dụng Key cá nhân" : "● Đang sử dụng Key mặc định"}
+                    </div>
+
                     <div className="relative">
                         <input 
                         type={showApiKey ? "text" : "password"}
                         value={userApiKey}
                         onChange={handleApiKeyChange}
-                        placeholder="Dán API Key của bạn..."
+                        placeholder="Dán API Key của bạn (nếu có)..."
                         className="w-full bg-blue-900/50 border border-blue-700/50 rounded-lg pl-3 pr-10 py-2 text-xs text-white placeholder-blue-500 focus:outline-none focus:border-blue-400 mb-1"
                         />
                         <button 
