@@ -719,11 +719,18 @@ HƯỚNG DẪN ĐIỀN NỘI DUNG VÀO 3 PHẦN:
    {B}
    {C}
    {D}
-   \\loigiai{}
+   \\loigiai{
+     \\begin{itemize}
+       \\item Ý 1...
+       \\item Ý 2...
+     \\end{itemize}
+   }
    \\end{ex}
    **QUY TẮC**: 
    - Sau \\begin{ex} phải xuống dòng rồi mới viết nội dung câu hỏi.
+   - **XÓA BỎ HOÀN TOÀN** các ký tự A., B., C., D. ở đầu các phương án trong \\choice.
    - Các phương án trong \\choice phải xuống dòng.
+   - Nếu có lời giải, phải đặt trong môi trường itemize như mẫu trên.
 
 2. **PHẦN II (Đúng/Sai)**: Điền vào chỗ %% NỘI DUNG PHẦN 2 TẠI ĐÂY %%. Dùng cấu trúc:
    \\begin{ex}
@@ -733,11 +740,16 @@ HƯỚNG DẪN ĐIỀN NỘI DUNG VÀO 3 PHẦN:
    {Ý sai 1}
    {\\True Ý đúng 2}
    {Ý sai 2}
-   \\loigiai{}
+   \\loigiai{
+     \\begin{itemize}
+       \\item Ý 1...
+       \\item Ý 2...
+     \\end{itemize}
+   }
    \\end{ex}
    **QUY TẮC QUAN TRỌNG**:
    - Sau \\begin{ex} phải xuống dòng.
-   - BỎ HOÀN TOÀN các ký tự a), b), c), d).
+   - **BỎ HOÀN TOÀN** các ký tự a), b), c), d).
    - Nếu ý là ĐÚNG -> Thêm tiền tố \\True vào đầu nội dung ý đó: {\\True Nội dung}.
    - Nếu ý là SAI -> Chỉ viết nội dung: {Nội dung}.
    - Viết mỗi ý trên một dòng riêng biệt.
@@ -746,7 +758,11 @@ HƯỚNG DẪN ĐIỀN NỘI DUNG VÀO 3 PHẦN:
    \\begin{ex}
    Nội dung câu hỏi...
    \\shortans[oly]{Đáp án}
-   \\loigiai{}
+   \\loigiai{
+     \\begin{itemize}
+       \\item ...
+     \\end{itemize}
+   }
    \\end{ex}
 
 4. **KHÔNG** thay đổi phần Preamble (khai báo gói, lệnh tắt, tiêu đề) của mẫu. Giữ nguyên y hệt.
@@ -768,15 +784,18 @@ QUAN TRỌNG:
 1. **KHÔNG** tạo lại phần khai báo (Preamble), \\documentclass, hay \\begin{document}.
 2. **CHỈ** xuất ra các câu hỏi tiếp theo (\\begin{ex}...\\end{ex}).
 3. Tuân thủ định dạng phần Đúng/Sai (\\choiceTFt):
-   - BỎ a), b), c), d).
+   - **BỎ** a), b), c), d).
    - Dùng tiền tố {\\True Nội dung} cho câu đúng.
    - Xuống dòng sau \\begin{ex} và các phương án.
-4. Tuân thủ quy tắc: \\dfrac, bảng center, bỏ dấu chấm cuối phương án.
-5. KHÔNG giải bài, chỉ chuyển đổi nội dung.
+4. Tuân thủ định dạng phần Trắc nghiệm (\\choice):
+   - **BỎ** A., B., C., D. ở đầu phương án.
+5. Tuân thủ quy tắc: \\dfrac, bảng center, bỏ dấu chấm cuối phương án.
+6. Nếu có lời giải, phải đặt trong \\begin{itemize} bên trong \\loigiai{}.
+7. KHÔNG giải bài, chỉ chuyển đổi nội dung.
 `;
               }
           } else {
-              // SOLVE MODE - Similar logic could apply if solving needs batching without solving logic for now
+              // SOLVE MODE
                systemInstruction = `
 Bạn là giáo viên giỏi. Giải chi tiết đề thi và xuất ra mã LaTeX theo MẪU BẮT BUỘC.
 
@@ -785,11 +804,19 @@ ${fullLatexTemplate}
 
 YÊU CẦU:
 1. Điền lời giải chi tiết vào bên trong thẻ \\loigiai{...} cho từng câu.
-2. Tuân thủ định dạng \\choiceTFt: Bỏ a,b,c,d; dùng \\True ở đầu câu đúng; xuống dòng rõ ràng.
-3. Thay thế tất cả lệnh \\frac thành \\dfrac.
-4. Loại bỏ dấu chấm (.) ở cuối cùng của nội dung các phương án.
-5. **BẢNG BIỂU**: Bắt buộc đặt trong \\begin{center}...\\end{center}.
-6. Chỉ trả về mã LaTeX hoàn chỉnh.
+2. **BẮT BUỘC**: Nội dung lời giải phải đặt trong môi trường itemize:
+   \\loigiai{
+     \\begin{itemize}
+       \\item Bước 1...
+       \\item Bước 2...
+     \\end{itemize}
+   }
+3. Tuân thủ định dạng \\choiceTFt: **BỎ** a,b,c,d; dùng \\True ở đầu câu đúng; xuống dòng rõ ràng.
+4. Tuân thủ định dạng \\choice: **BỎ** A,B,C,D ở đầu phương án.
+5. Thay thế tất cả lệnh \\frac thành \\dfrac.
+6. Loại bỏ dấu chấm (.) ở cuối cùng của nội dung các phương án.
+7. **BẢNG BIỂU**: Bắt buộc đặt trong \\begin{center}...\\end{center}.
+8. Chỉ trả về mã LaTeX hoàn chỉnh.
 `;
           }
       }
