@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { GoogleGenAI } from "@google/genai";
@@ -11,6 +12,11 @@ declare global {
 
 type TabType = 'word' | 'latex' | 'settings';
 
+interface CustomFile {
+    name: string;
+    content: string;
+}
+
 const App = () => {
   // --- TABS STATE ---
   const [activeTab, setActiveTab] = useState<TabType>('word');
@@ -19,6 +25,10 @@ const App = () => {
   // --- API KEY STATE ---
   const [userApiKey, setUserApiKey] = useState<string>("");
   const [showApiKey, setShowApiKey] = useState<boolean>(false);
+
+  // --- CUSTOM PACKAGES STATE ---
+  const [customFiles, setCustomFiles] = useState<CustomFile[]>([]);
+  const [showPackages, setShowPackages] = useState<boolean>(false);
 
   // --- CONVERSION STATE ---
   const [file, setFile] = useState<File | null>(null);
@@ -43,6 +53,35 @@ const App = () => {
   useEffect(() => {
     const storedKey = localStorage.getItem("user_gemini_api_key");
     if (storedKey) setUserApiKey(storedKey);
+
+    // Load custom files list
+    const storedFiles = localStorage.getItem("custom_latex_files");
+    if (storedFiles) {
+        try {
+            setCustomFiles(JSON.parse(storedFiles));
+        } catch (e) {
+            console.error("Error parsing stored files", e);
+        }
+    } else {
+        // Migration for old keys (ex_test and anttor) to new system
+        const oldExTest = localStorage.getItem("custom_sty_extest");
+        const oldAnttor = localStorage.getItem("custom_sty_anttor");
+        const migratedFiles: CustomFile[] = [];
+
+        if (oldExTest) {
+            migratedFiles.push({ name: "ex_test.sty", content: oldExTest });
+            localStorage.removeItem("custom_sty_extest");
+        }
+        if (oldAnttor) {
+            migratedFiles.push({ name: "anttor.sty", content: oldAnttor });
+            localStorage.removeItem("custom_sty_anttor");
+        }
+
+        if (migratedFiles.length > 0) {
+            setCustomFiles(migratedFiles);
+            localStorage.setItem("custom_latex_files", JSON.stringify(migratedFiles));
+        }
+    }
   }, []);
 
   // Listen for paste events globally when on home tab to catch easy pastes
@@ -69,6 +108,47 @@ const App = () => {
     const newVal = e.target.value;
     setUserApiKey(newVal);
     localStorage.setItem("user_gemini_api_key", newVal);
+  };
+
+  const handleCustomFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (e.target.files && e.target.files.length > 0) {
+          const newFiles: CustomFile[] = [];
+          
+          for (let i = 0; i < e.target.files.length; i++) {
+              const file = e.target.files[i];
+              try {
+                  const content = await file.text();
+                  // Check if file with same name exists, if so, replace it
+                  const existingIndex = customFiles.findIndex(f => f.name === file.name);
+                  if (existingIndex === -1) {
+                      newFiles.push({ name: file.name, content: content });
+                  } else {
+                      // We will handle replacements by filtering old state first in the setter
+                  }
+              } catch (err) {
+                  console.error(`Error reading file ${file.name}`, err);
+              }
+          }
+
+          setCustomFiles(prev => {
+              // Merge: remove duplicates from prev based on name if they exist in newFiles
+              const filteredPrev = prev.filter(p => !newFiles.some(n => n.name === p.name));
+              const updated = [...filteredPrev, ...newFiles];
+              localStorage.setItem("custom_latex_files", JSON.stringify(updated));
+              return updated;
+          });
+          
+          // Reset input value to allow re-uploading same file if needed
+          e.target.value = '';
+      }
+  };
+
+  const handleDeleteCustomFile = (fileNameToDelete: string) => {
+      setCustomFiles(prev => {
+          const updated = prev.filter(f => f.name !== fileNameToDelete);
+          localStorage.setItem("custom_latex_files", JSON.stringify(updated));
+          return updated;
+      });
   };
 
   const getApiKey = () => {
@@ -125,7 +205,7 @@ const App = () => {
     return dataUrl.split(',')[1];
   };
 
-  const processWithAI = async (parts: any[], mode: 'convert' | 'solve', currentTab: TabType) => {
+  const processWithAI = async (parts: any[], mode: 'convert' | 'solve', currentTab: TabType, isFirstBatch: boolean = true) => {
       const ai = new GoogleGenAI({ apiKey: getApiKey() });
       const modelId = "gemini-2.5-flash";
 
@@ -143,6 +223,7 @@ TUÂN THỦ 100% QUY TẮC:
 2. **Toán học & Khoa học**:
    - Công thức toán BẮT BUỘC đặt trong dấu $...$ (LaTeX inline).
    - Công thức trong dòng dùng $...$ (inline), KHÔNG dùng $$...$$ (block) và KHÔNG xuống dòng ngắt quãng.
+   - Thay thế toàn bộ lệnh \\frac bằng lệnh \\dfrac để phân số to rõ hơn.
    - Ký tự Hy Lạp: ρ → \\rho, θ → \\theta, α → \\alpha...
    - Đơn vị: $50\\;cm$, $300^\\circ C$, \\%.
 3. **Cấu trúc**:
@@ -160,7 +241,7 @@ YÊU CẦU:
 1. Trích dẫn câu hỏi (ngắn gọn) rồi giải chi tiết.
 2. Giải thích logic, công thức.
 3. Dùng HTML (<h3>, <p>, <b>, <ul>).
-4. Toán/Lý/Hóa dùng LaTeX trong dấu $. Viết liền mạch, KHÔNG xuống dòng ngắt quãng.
+4. Toán/Lý/Hóa dùng LaTeX trong dấu $. Dùng \\dfrac thay vì \\frac. Viết liền mạch, KHÔNG xuống dòng ngắt quãng.
 5. **QUAN TRỌNG**: Sau khi giải chi tiết xong, hãy tự rút ra đáp án đúng nhất cho từng câu và điền vào bảng tổng hợp cuối cùng. Tuyệt đối không được để bảng trống.
 6. **ĐỊNH DẠNG BẢNG ĐÁP ÁN**: Tạo bảng HTML 10 cột, nội dung dạng **1.A**, **2.B**. Tiêu đề bảng là "BẢNG ĐÁP ÁN TỔNG HỢP".
 `;
@@ -168,96 +249,208 @@ YÊU CẦU:
       } 
       // === PROMPTS FOR LATEX ===
       else if (currentTab === 'latex') {
-          // Common LaTeX Preamble instructions
-          const latexHeader = `
+          // --- DETAILED LATEX TEMPLATE ---
+          const fullLatexTemplate = `
 \\documentclass[12pt,a4paper]{article}
 \\usepackage[light,condensed,math]{anttor}
-\\usepackage{amsmath,amssymb,tasks,graphicx,geometry}
+\\everymath{\\rm}
+%Các gói
+\\usepackage{amsmath,amssymb,grffile,makecell,fancyhdr,enumerate,arcs,physics,tasks,mathrsfs,graphics}
+\\usepackage{tikz,tikz-3dplot,tkz-euclide,tkz-tab,tkz-linknodes,tabvar,pgfplots,esvect}
+\\usepackage[top=1.5cm, bottom=1.5cm, left=2cm, right=1.5cm]{geometry}
+\\usepackage[hidelinks,unicode]{hyperref}
 \\usepackage[utf8]{vietnam}
+\\usepackage[most,xparse,many]{tcolorbox}
 \\usepackage[dethi]{ex_test}
-\\geometry{top=1.5cm, bottom=1.5cm, left=2cm, right=1.5cm}
+%
+%Các thư viện
+\\usetikzlibrary{shapes.geometric,shadings,calc,snakes,patterns,arrows,intersections,angles,backgrounds,quotes}
+\\usepgfplotslibrary{fillbetween}
+\\pgfplotsset{compat=newest}
+\\tikzset{middlearrow/.style={decoration={markings,mark= at position 0.5 with {\\arrow{#1}},},postaction={decorate}}}
+\\tikzset{middlearrow/.style={decoration={markings,mark= at position 0.5 with {\\arrow{#1}},},postaction={decorate}}}
+\\tikzset{on each segment/.style={decorate,decoration={show path construction,moveto code={},lineto code={
+\\path [#1] (\\tikzinputsegmentfirst) -- (\\tikzinputsegmentlast);},curveto code={
+\\path [#1] (\\tikzinputsegmentfirst).. controls (\\tikzinputsegmentsupporta) and (\\tikzinputsegmentsupportb)..(\\tikzinputsegmentlast);},closepath code={
+\\path [#1] (\\tikzinputsegmentfirst) -- (\\tikzinputsegmentlast);},},},mid arrow/.style={postaction={decorate,decoration={markings,mark=at position .5 with {\\arrow[#1]{stealth}}}}},}
+%
+%Một số lệnh tắt
+\\def\\vec{\\overrightarrow}
+\\newcommand{\\hoac}[1]{\\left[\\begin{aligned}#1\\end{aligned}\\right.}
+\\newcommand{\\heva}[1]{\\left\\{\\begin{aligned}#1\\end{aligned}\\right.}
+\\newcommand{\\hetde}{\\centerline{\\rule[0.5ex]{2cm}{1pt} HẾT \\rule[0.5ex]{2cm}{1pt}}}
+%
+%Tiêu đề
+\\newcommand{\\tentruong}{}
+\\newcommand{\\tengv}{}
+\\newcommand{\\tenkythi}{ĐỀ KIỂM TRA THƯỜNG XUYÊN}
+\\newcommand{\\tenmonthi}{MÔN VẬT LÍ, NHIỆT VÀ KHÍ}
+\\newcommand{\\thoigian}{50}
+\\newcommand{\\made}{NK2}
+\\newcommand{\\tieude}[3]{
+\\noindent
+%Trái
+\\begin{minipage}[b]{7cm}
+\\centerline{\\textbf{\\fontsize{13}{0}\\selectfont \\tentruong}}
+\\centerline{\\textbf{\\fontsize{13}{0}\\selectfont \\tengv}}
+\\centerline{(\\textit{Đề có 0#1\\ trang})}
+\\end{minipage}\\hspace{1.5cm}
+%Phải
+\\begin{minipage}[b]{9cm}
+\\centerline{\\textbf{\\fontsize{13}{0}\\selectfont \\tenkythi}}
+\\centerline{\\textbf{\\fontsize{13}{0}\\selectfont \\tenmonthi}}
+\\centerline{\\textit{\\fontsize{12}{0}\\selectfont Thời gian làm bài \\thoigian\\ phút}}
+\\end{minipage}
+\\begin{minipage}[b]{10cm}
+\\textbf{Họ và tên thí sinh: }{\\tiny\\dotfill}
+\\end{minipage}
+\\begin{minipage}[b]{8cm}
+\\hspace*{4cm}\\fbox{\\bf Mã đề thi #3}
+\\end{minipage}\\vspace{3pt}
+}
+%Lệnh dùng cho trắc nghiệm chấm tay
+\\newcommand*\\circletext[1]{\\tikz[baseline=(char.base)]{
+            \\node[shape=circle,draw,inner sep=0.5pt] (char) {\\fontsize{10}{0}\\selectfont#1};}}
+\\newcommand*\\fillcircletext[1]{\\tikz[baseline=(char.base)]{
+            \\node[shape=circle,draw,fill=black,inner sep=0.6pt] (char) {\\fontsize{10}{0}\\selectfont#1};}}
+\\renewtheorem{ex}{\\color{black}\\selectfont\\bfseries Câu}
+\\renewcommand{\\FalseEX}{\\stepcounter{dapan}{\\noindent{\\textbf{\\Alph{dapan}.}}}}
+%chân trang
+\\newcommand{\\chantrang}[2]{\\rfoot{Trang \\thepage/#1 $-$ Mã đề #2}}
+%
+\\pagestyle{fancy}
+\\fancyhf{}
+\\renewcommand{\\headrulewidth}{0pt}
+\\begin{document}
+\\tieude{\\pageref{101}}{18}{\\made}
+\\chantrang{\\pageref{101}}{\\made}
+\\setcounter{page}{1}
+\\noindent\\textbf{PHẦN I. TRẮC NGHIỆM 4 PHƯƠNG ÁN.} Thí sinh trả lời từ câu 1 đến câu 18. Mỗi câu hỏi thí sinh chỉ chọn một phương án.
+\\vspace{0.5 cm}
+\\setcounter{ex}{0}
+\\Opensolutionfile{ans}[tnde7]
+%% NỘI DUNG PHẦN 1 TẠI ĐÂY %%
+\\Closesolutionfile{ans}
+\\vspace{0.5 cm}
+\\noindent\\textbf{PHẦN II. TRẮC NGHIỆM ĐÚNG SAI.} Thí sinh trả lời từ câu 1 đến câu 4. Mỗi ý a), b), c), d) ở mỗi câu hỏi, thí sinh chọn đúng hoặc sai.
+\\vspace{0.5 cm}
+\\setcounter{ex}{0}
+\\Opensolutionfile{ans}[dsde7]
+%% NỘI DUNG PHẦN 2 TẠI ĐÂY %%
+\\Closesolutionfile{ans}
+\\vspace{0.5 cm}
+\\noindent\\textbf{PHẦN III. TRẮC NGHIỆM TRẢ LỜI NGẮN.} Thí sinh trả lời từ câu 1 đến câu 6.
+\\vspace{0.5 cm}
+\\setcounter{ex}{0}
+\\Opensolutionfile{ans}[tlnde7]
+%% NỘI DUNG PHẦN 3 TẠI ĐÂY %%
+\\Closesolutionfile{ans}
+\\hetde
+\\label{101}
+\\newpage
+\\centerline{\\textbf{\\fontsize{20}{0}\\selectfont ĐÁP ÁN ĐỀ KIỂM TRA VẬT LÍ MÃ ĐỀ \\made}}
+\\setcounter{page}{1}
+\\begin{center}
+\\bf ĐÁP ÁN PHẦN TRẮC NGHIỆM 4 PHƯƠNG ÁN\\vspace{12pt}
+\\inputansbox[1]{10}{tnde7}
+\\bf ĐÁP ÁN PHẦN TRẮC NGHIỆM ĐÚNG SAI 
+\\inputansbox[2]{2}{dsde7}
+\\bf ĐÁP ÁN PHẦN TRẢ LỜI NGẮN
+\\inputansbox[3]{6}{tlnde7}
+\\end{center}
+\\end{document}
 `;
 
           if (mode === 'convert') {
-              systemInstruction = `
+              if (isFirstBatch) {
+                  systemInstruction = `
 Bạn là chuyên gia chuyển đổi LaTeX sử dụng gói lệnh 'ex_test' (tương tự dethi.sty).
-Nhiệm vụ: Chuyển đổi nội dung đầu vào thành mã LaTeX hoàn chỉnh.
+Nhiệm vụ: Chuyển đổi nội dung đầu vào thành mã LaTeX hoàn chỉnh theo MẪU BẮT BUỘC dưới đây.
 
-QUY TẮC NHẬN DIỆN VÀ ĐỊNH DẠNG CẤU TRÚC:
+MẪU CẤU TRÚC (Tuyệt đối tuân thủ):
+${fullLatexTemplate}
 
-1. **Loại 1: Trắc nghiệm 4 đáp án (A, B, C, D)**
-   - Cấu trúc:
-     \\begin{ex}
-     Nội dung câu hỏi...
-     \\choice
-     {Phương án A}
-     {\\True Phương án B} % Nếu B là đáp án đúng (được tô màu/gạch chân)
-     {Phương án C}
-     {Phương án D}
-     \\loigiai{
-       \\begin{itemize}
-       \\item 
-       \\end{itemize}
-     }
-     \\end{ex}
-   - Lưu ý: Nếu chưa có đáp án đúng, không dùng \\True.
+HƯỚNG DẪN ĐIỀN NỘI DUNG VÀO 3 PHẦN:
 
-2. **Loại 2: Trắc nghiệm Đúng/Sai (a, b, c, d)**
-   - Cấu trúc:
-     \\begin{ex}
-     Nội dung câu hỏi...
-     \\choiceTFt
-     {Phát biểu a}
-     {\\True Phát biểu b} % Nếu b đúng
-     {Phát biểu c}
-     {Phát biểu d}
-     \\loigiai{
-       \\begin{itemize}
-       \\item 
-       \\end{itemize}
-     }
-     \\end{ex}
+1. **PHẦN I (Trắc nghiệm 4 đáp án)**: Điền vào chỗ %% NỘI DUNG PHẦN 1 TẠI ĐÂY %%. Dùng cấu trúc:
+   \\begin{ex}
+   Nội dung câu hỏi...
+   \\choice
+   {\\True A}
+   {B}
+   {C}
+   {D}
+   \\loigiai{}
+   \\end{ex}
+   **QUY TẮC**: 
+   - Sau \\begin{ex} phải xuống dòng rồi mới viết nội dung câu hỏi.
+   - Các phương án trong \\choice phải xuống dòng.
 
-3. **Loại 3: Tự luận ngắn (Không có phương án lựa chọn)**
-   - Cấu trúc:
-     \\begin{ex}
-     Nội dung câu hỏi...
-     \\shortans[oly]{Đáp án} % Nếu có đáp án số
-     \\loigiai{
-       \\begin{itemize}
-       \\item 
-       \\end{itemize}
-     }
-     \\end{ex}
+2. **PHẦN II (Đúng/Sai)**: Điền vào chỗ %% NỘI DUNG PHẦN 2 TẠI ĐÂY %%. Dùng cấu trúc:
+   \\begin{ex}
+   Nội dung câu hỏi...
+   \\choiceTFt
+   {\\True Ý đúng 1}
+   {Ý sai 1}
+   {\\True Ý đúng 2}
+   {Ý sai 2}
+   \\loigiai{}
+   \\end{ex}
+   **QUY TẮC QUAN TRỌNG**:
+   - Sau \\begin{ex} phải xuống dòng.
+   - BỎ HOÀN TOÀN các ký tự a), b), c), d).
+   - Nếu ý là ĐÚNG -> Thêm tiền tố \\True vào đầu nội dung ý đó: {\\True Nội dung}.
+   - Nếu ý là SAI -> Chỉ viết nội dung: {Nội dung}.
+   - Viết mỗi ý trên một dòng riêng biệt.
 
-YÊU CẦU CHUNG:
-- Bắt đầu file bằng: ${latexHeader.replace(/\n/g, " ")} \\begin{document}
-- Kết thúc file bằng: \\end{document}
-- Công thức toán: Dùng $...$ cho inline. Sửa các ký tự đặc biệt ($^\circ C$, \%, $30\\;cm$).
-- Sửa lỗi chính tả tiếng Việt.
-- Chỉ trả về mã LaTeX raw text.
+3. **PHẦN III (Trả lời ngắn)**: Điền vào chỗ %% NỘI DUNG PHẦN 3 TẠI ĐÂY %%. Dùng cấu trúc:
+   \\begin{ex}
+   Nội dung câu hỏi...
+   \\shortans[oly]{Đáp án}
+   \\loigiai{}
+   \\end{ex}
+
+4. **KHÔNG** thay đổi phần Preamble (khai báo gói, lệnh tắt, tiêu đề) của mẫu. Giữ nguyên y hệt.
+5. Tự động nhận diện đáp án đúng (gạch chân/tô màu) để thêm lệnh \\True hoặc điền đáp án.
+6. **QUY TẮC CHUNG**:
+   - Thay thế toàn bộ lệnh \\frac thành \\dfrac.
+   - Công thức toán inline dùng $...$.
+   - Bảng (tabular) bắt buộc đặt trong \\begin{center}...\\end{center}.
+   - Loại bỏ dấu chấm (.) ở cuối cùng của nội dung các phương án.
+7. Chỉ trả về mã LaTeX hoàn chỉnh.
 `;
-          } else {
-              systemInstruction = `
-Bạn là giáo viên giỏi soạn thảo bằng LaTeX (gói ex_test).
-Nhiệm vụ: Giải chi tiết đề thi và xuất ra mã LaTeX.
-
-YÊU CẦU CẤU TRÚC (BẮT BUỘC):
-Sử dụng đúng 3 loại môi trường:
-1. \\begin{ex} ... \\choice ... \\loigiai{} \\end{ex} (4 đáp án)
-2. \\begin{ex} ... \\choiceTFt ... \\loigiai{} \\end{ex} (Đúng/Sai)
-3. \\begin{ex} ... \\shortans[oly]{} \\loigiai{} \\end{ex} (Trả lời ngắn)
-
-HƯỚNG DẪN GIẢI:
-- Điền lời giải chi tiết vào bên trong thẻ \\loigiai{...}.
-- Sử dụng môi trường \\begin{itemize} \\item ... \\end{itemize} trong lời giải.
-- Xác định đáp án đúng và thêm lệnh \\True vào trước phương án đó trong \\choice hoặc \\choiceTFt.
-- Tính toán và điền đáp án số vào \\shortans[oly]{...} cho câu tự luận ngắn.
+              } else {
+                  // CONTINUATION PROMPT
+                  systemInstruction = `
+Bạn đang tiếp tục chuyển đổi tài liệu LaTeX từ đợt trước.
+Nhiệm vụ: Chuyển đổi nội dung tiếp theo thành mã LaTeX (dạng ex_test).
 
 QUAN TRỌNG:
-- Bắt đầu file bằng preamble chuẩn (anttor, ex_test, vietnam...).
-- Cuối file tạo bảng đáp án tổng hợp (nếu có thể).
-- Chỉ trả về mã LaTeX.
+1. **KHÔNG** tạo lại phần khai báo (Preamble), \\documentclass, hay \\begin{document}.
+2. **CHỈ** xuất ra các câu hỏi tiếp theo (\\begin{ex}...\\end{ex}).
+3. Tuân thủ định dạng phần Đúng/Sai (\\choiceTFt):
+   - BỎ a), b), c), d).
+   - Dùng tiền tố {\\True Nội dung} cho câu đúng.
+   - Xuống dòng sau \\begin{ex} và các phương án.
+4. Tuân thủ quy tắc: \\dfrac, bảng center, bỏ dấu chấm cuối phương án.
+5. KHÔNG giải bài, chỉ chuyển đổi nội dung.
+`;
+              }
+          } else {
+              // SOLVE MODE - Similar logic could apply if solving needs batching without solving logic for now
+               systemInstruction = `
+Bạn là giáo viên giỏi. Giải chi tiết đề thi và xuất ra mã LaTeX theo MẪU BẮT BUỘC.
+
+MẪU CẤU TRÚC:
+${fullLatexTemplate}
+
+YÊU CẦU:
+1. Điền lời giải chi tiết vào bên trong thẻ \\loigiai{...} cho từng câu.
+2. Tuân thủ định dạng \\choiceTFt: Bỏ a,b,c,d; dùng \\True ở đầu câu đúng; xuống dòng rõ ràng.
+3. Thay thế tất cả lệnh \\frac thành \\dfrac.
+4. Loại bỏ dấu chấm (.) ở cuối cùng của nội dung các phương án.
+5. **BẢNG BIỂU**: Bắt buộc đặt trong \\begin{center}...\\end{center}.
+6. Chỉ trả về mã LaTeX hoàn chỉnh.
 `;
           }
       }
@@ -283,9 +476,11 @@ QUAN TRỌNG:
       const arrayBuffer = await file.arrayBuffer();
       const pdfDoc = await window.pdfjsLib.getDocument(arrayBuffer).promise;
       const totalPages = pdfDoc.numPages;
-      const BATCH_SIZE = 3; // Process 3 pages at a time to avoid overload
+      const BATCH_SIZE = 6; // Process 6 pages at a time
       const MAX_RETRIES = 5;
       
+      let finalResult = "";
+
       for (let i = 1; i <= totalPages; i += BATCH_SIZE) {
         // CHECK STOP CONDITION
         if (abortRef.current) {
@@ -295,6 +490,7 @@ QUAN TRỌNG:
 
         const startPage = i;
         const endPage = Math.min(i + BATCH_SIZE - 1, totalPages);
+        const isFirstBatch = i === 1;
         
         setProgress(Math.round(((i - 1) / totalPages) * 100));
 
@@ -314,7 +510,7 @@ QUAN TRỌNG:
                 }
 
                 // Send this batch to AI (Pass activeTab to select prompt)
-                let batchResult = await processWithAI(imageParts, mode, activeTab as TabType);
+                let batchResult = await processWithAI(imageParts, mode, activeTab as TabType, isFirstBatch);
                 
                 // Check Abort BEFORE updating content
                 if (abortRef.current) {
@@ -322,8 +518,31 @@ QUAN TRỌNG:
                     break;
                 }
                 
-                // Append result IMMEDIATELY for streaming effect
-                setResultContent(prev => prev + batchResult + (activeTab === 'word' ? "<br/><br/>" : "\n\n% --- Next Batch ---\n\n"));
+                // --- POST-PROCESSING FOR BATCHING ---
+                if (activeTab === 'latex') {
+                    // For batches > 1, we just append the EX content.
+                    // However, we need to handle the closing tags from the previous batch if they exist, or structure the stream.
+                    // SIMPLIFIED APPROACH:
+                    // 1. If it's the first batch, we keep everything BUT the \end{document}
+                    // 2. If it's a middle batch, we just append the content (which AI should generate as just questions)
+                    // 3. At the very end of loop, we append \end{document}
+                    
+                    if (isFirstBatch) {
+                        // Remove \end{document} from the end if it exists
+                        batchResult = batchResult.replace(/\\end{document}/g, "").trim();
+                    } else {
+                        // Ensure no preamble is accidentally included (AI might hallucinate) by simple string matching or just trust the prompt
+                        // We strictly append.
+                    }
+                    
+                    finalResult += batchResult + "\n\n% --- Next Batch ---\n\n";
+                    setResultContent(finalResult); 
+
+                } else {
+                     // Word mode: simple append
+                     finalResult += batchResult + "<br/><br/>";
+                     setResultContent(finalResult);
+                }
                 
                 success = true; // Mark as success to exit retry loop
             } catch (err) {
@@ -333,7 +552,8 @@ QUAN TRỌNG:
                     const errorMsg = activeTab === 'word' 
                         ? `<br/><p style="color:red; font-weight:bold;">[LỖI: Không thể xử lý trang ${startPage}-${endPage} sau nhiều lần thử. Đang bỏ qua...]</p><br/>`
                         : `\n% [LỖI: Không thể xử lý trang ${startPage}-${endPage} sau nhiều lần thử]\n`;
-                    setResultContent(prev => prev + errorMsg);
+                    finalResult += errorMsg;
+                    setResultContent(finalResult);
                     // We don't throw here, we just skip this chunk and continue to next
                     success = true; 
                 } else {
@@ -346,6 +566,10 @@ QUAN TRỌNG:
       }
 
       if (!abortRef.current) {
+          // Finalize document for LaTeX
+          if (activeTab === 'latex') {
+              setResultContent(prev => prev + "\n\\end{document}");
+          }
           setProgress(100);
       }
 
@@ -558,6 +782,18 @@ QUAN TRỌNG:
           return;
       }
 
+      // PREPARE PACKAGE INJECTION
+      let packagesHeader = "";
+      
+      // Inject all custom files
+      if (customFiles.length > 0) {
+          customFiles.forEach(f => {
+              packagesHeader += `\\begin{filecontents*}{${f.name}}\n${f.content}\n\\end{filecontents*}\n\n`;
+          });
+      }
+
+      const finalCode = packagesHeader + latexCode;
+
       // Create a form to POST data to Overleaf
       const form = document.createElement('form');
       form.method = 'POST';
@@ -567,7 +803,7 @@ QUAN TRỌNG:
       const input = document.createElement('input');
       input.type = 'hidden';
       input.name = 'snip';
-      input.value = latexCode;
+      input.value = finalCode;
 
       form.appendChild(input);
       document.body.appendChild(form);
@@ -780,6 +1016,65 @@ QUAN TRỌNG:
                     </div>
                     <p className="text-[10px] text-blue-400 italic mt-1">Key được lưu trong trình duyệt của bạn.</p>
                   </div>
+
+                  <div className="bg-blue-950/50 p-4 rounded-xl border border-blue-800/30">
+                    <button 
+                        onClick={() => setShowPackages(!showPackages)}
+                        className="w-full flex justify-between items-center text-white font-bold text-sm mb-2 pb-2 border-b border-blue-800 hover:text-blue-300"
+                    >
+                        <span>CẤU HÌNH GÓI LỆNH OVERLEAF</span>
+                        <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 transform transition-transform ${showPackages ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    
+                    {showPackages && (
+                        <div className="space-y-4 animate-fade-in pt-2">
+                             <p className="text-blue-200 text-xs italic">Tải lên các file .sty, .tex, .cls để tự động nhúng vào Overleaf.</p>
+                             
+                             <div className="relative border border-dashed border-blue-600 rounded-lg p-4 hover:bg-blue-900/30 transition-colors">
+                                <input 
+                                    type="file"
+                                    multiple
+                                    accept=".sty,.tex,.cls"
+                                    onChange={handleCustomFileUpload}
+                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                />
+                                <div className="text-center text-blue-300 text-xs">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mx-auto mb-1 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                                    </svg>
+                                    <p>Click để chọn file hoặc kéo thả vào đây</p>
+                                </div>
+                             </div>
+
+                             {customFiles.length > 0 && (
+                                 <div className="space-y-2 mt-3">
+                                     <p className="text-xs font-bold text-white">Danh sách file đã lưu ({customFiles.length}):</p>
+                                     <div className="max-h-40 overflow-y-auto custom-scrollbar space-y-2 pr-1">
+                                        {customFiles.map((f, idx) => (
+                                            <div key={idx} className="flex justify-between items-center bg-blue-900/50 p-2 rounded-lg border border-blue-800">
+                                                <div className="flex items-center gap-2 overflow-hidden">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-blue-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                                    </svg>
+                                                    <span className="text-xs text-blue-100 truncate">{f.name}</span>
+                                                </div>
+                                                <button 
+                                                    onClick={() => handleDeleteCustomFile(f.name)}
+                                                    className="text-red-400 hover:text-red-300 p-1 rounded hover:bg-red-500/20"
+                                                    title="Xóa file"
+                                                >
+                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        ))}
+                                     </div>
+                                 </div>
+                             )}
+                        </div>
+                    )}
+                  </div>
               </div>
           )}
           
@@ -895,7 +1190,7 @@ QUAN TRỌNG:
 
            {/* VIEW FOR SETTINGS */}
            {activeTab === 'settings' && (
-              <div className="w-full h-full bg-slate-50 flex items-center justify-center animate-fade-in-up p-8">
+              <div className="w-full h-full bg-slate-50 flex items-center justify-center animate-fade-in-up p-8 overflow-y-auto">
                  <div className="bg-white max-w-2xl w-full rounded-2xl shadow-xl p-10 border border-blue-100 text-center">
                     <div className="w-24 h-24 bg-blue-600 text-white rounded-full flex items-center justify-center text-4xl font-bold mx-auto mb-6 shadow-lg">H</div>
                     <h2 className="text-3xl font-bold text-blue-900 mb-2">Nguyễn Đức Hiền</h2>
