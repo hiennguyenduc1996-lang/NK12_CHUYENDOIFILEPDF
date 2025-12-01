@@ -9,10 +9,12 @@ declare global {
   }
 }
 
+type TabType = 'word' | 'latex' | 'settings';
+
 const App = () => {
   // --- TABS STATE ---
-  const [activeTab, setActiveTab] = useState<'home' | 'settings'>('home');
-  const [lastActiveTab, setLastActiveTab] = useState<'home' | 'settings'>('home');
+  const [activeTab, setActiveTab] = useState<TabType>('word');
+  const [lastActiveTab, setLastActiveTab] = useState<TabType>('word');
 
   // --- API KEY STATE ---
   const [userApiKey, setUserApiKey] = useState<string>("");
@@ -46,7 +48,7 @@ const App = () => {
   // Listen for paste events globally when on home tab to catch easy pastes
   useEffect(() => {
     const handleGlobalPaste = (e: ClipboardEvent) => {
-      if (activeTab === 'home') {
+      if (activeTab === 'word' || activeTab === 'latex') {
         handlePaste(e);
       }
     };
@@ -123,20 +125,23 @@ const App = () => {
     return dataUrl.split(',')[1];
   };
 
-  const processWithAI = async (parts: any[], mode: 'convert' | 'solve') => {
+  const processWithAI = async (parts: any[], mode: 'convert' | 'solve', currentTab: TabType) => {
       const ai = new GoogleGenAI({ apiKey: getApiKey() });
       const modelId = "gemini-2.5-flash";
 
       let systemInstruction = "";
-      if (mode === 'convert') {
-         systemInstruction = `
+
+      // === PROMPTS FOR WORD (HTML) ===
+      if (currentTab === 'word') {
+          if (mode === 'convert') {
+             systemInstruction = `
 Bạn là chuyên gia chuyển đổi tài liệu Toán - Lý - Hóa.
 Nhiệm vụ: Chép lại nội dung hình ảnh/văn bản đầu vào thành mã HTML sạch, chuẩn để dán vào Word.
 
 TUÂN THỦ 100% QUY TẮC:
 1. **Chính tả & Unicode**: Sửa lỗi chính tả tiếng Việt và lỗi font unicode.
 2. **Toán học & Khoa học**:
-   - Công thức toán BẮT BUỘC đặt trong dấu $...$ (LaTeX).
+   - Công thức toán BẮT BUỘC đặt trong dấu $...$ (LaTeX inline).
    - Công thức trong dòng dùng $...$ (inline), KHÔNG dùng $$...$$ (block) và KHÔNG xuống dòng ngắt quãng.
    - Ký tự Hy Lạp: ρ → \\rho, θ → \\theta, α → \\alpha...
    - Đơn vị: $50\\;cm$, $300^\\circ C$, \\%.
@@ -146,8 +151,8 @@ TUÂN THỦ 100% QUY TẮC:
    - Dùng thẻ <p> cho đoạn văn, <br> ngắt dòng.
 4. **Nguyên tắc**: Chỉ trả về HTML body content. Không Markdown.
 `;
-      } else {
-         systemInstruction = `
+          } else {
+             systemInstruction = `
 Bạn là giáo viên giỏi.
 Nhiệm vụ: Giải chi tiết và hướng dẫn làm bài cho nội dung đầu vào.
 
@@ -159,6 +164,102 @@ YÊU CẦU:
 5. **QUAN TRỌNG**: Sau khi giải chi tiết xong, hãy tự rút ra đáp án đúng nhất cho từng câu và điền vào bảng tổng hợp cuối cùng. Tuyệt đối không được để bảng trống.
 6. **ĐỊNH DẠNG BẢNG ĐÁP ÁN**: Tạo bảng HTML 10 cột, nội dung dạng **1.A**, **2.B**. Tiêu đề bảng là "BẢNG ĐÁP ÁN TỔNG HỢP".
 `;
+          }
+      } 
+      // === PROMPTS FOR LATEX ===
+      else if (currentTab === 'latex') {
+          // Common LaTeX Preamble instructions
+          const latexHeader = `
+\\documentclass[12pt,a4paper]{article}
+\\usepackage[light,condensed,math]{anttor}
+\\usepackage{amsmath,amssymb,tasks,graphicx,geometry}
+\\usepackage[utf8]{vietnam}
+\\usepackage[dethi]{ex_test}
+\\geometry{top=1.5cm, bottom=1.5cm, left=2cm, right=1.5cm}
+`;
+
+          if (mode === 'convert') {
+              systemInstruction = `
+Bạn là chuyên gia chuyển đổi LaTeX sử dụng gói lệnh 'ex_test' (tương tự dethi.sty).
+Nhiệm vụ: Chuyển đổi nội dung đầu vào thành mã LaTeX hoàn chỉnh.
+
+QUY TẮC NHẬN DIỆN VÀ ĐỊNH DẠNG CẤU TRÚC:
+
+1. **Loại 1: Trắc nghiệm 4 đáp án (A, B, C, D)**
+   - Cấu trúc:
+     \\begin{ex}
+     Nội dung câu hỏi...
+     \\choice
+     {Phương án A}
+     {\\True Phương án B} % Nếu B là đáp án đúng (được tô màu/gạch chân)
+     {Phương án C}
+     {Phương án D}
+     \\loigiai{
+       \\begin{itemize}
+       \\item 
+       \\end{itemize}
+     }
+     \\end{ex}
+   - Lưu ý: Nếu chưa có đáp án đúng, không dùng \\True.
+
+2. **Loại 2: Trắc nghiệm Đúng/Sai (a, b, c, d)**
+   - Cấu trúc:
+     \\begin{ex}
+     Nội dung câu hỏi...
+     \\choiceTFt
+     {Phát biểu a}
+     {\\True Phát biểu b} % Nếu b đúng
+     {Phát biểu c}
+     {Phát biểu d}
+     \\loigiai{
+       \\begin{itemize}
+       \\item 
+       \\end{itemize}
+     }
+     \\end{ex}
+
+3. **Loại 3: Tự luận ngắn (Không có phương án lựa chọn)**
+   - Cấu trúc:
+     \\begin{ex}
+     Nội dung câu hỏi...
+     \\shortans[oly]{Đáp án} % Nếu có đáp án số
+     \\loigiai{
+       \\begin{itemize}
+       \\item 
+       \\end{itemize}
+     }
+     \\end{ex}
+
+YÊU CẦU CHUNG:
+- Bắt đầu file bằng: ${latexHeader.replace(/\n/g, " ")} \\begin{document}
+- Kết thúc file bằng: \\end{document}
+- Công thức toán: Dùng $...$ cho inline. Sửa các ký tự đặc biệt ($^\circ C$, \%, $30\\;cm$).
+- Sửa lỗi chính tả tiếng Việt.
+- Chỉ trả về mã LaTeX raw text.
+`;
+          } else {
+              systemInstruction = `
+Bạn là giáo viên giỏi soạn thảo bằng LaTeX (gói ex_test).
+Nhiệm vụ: Giải chi tiết đề thi và xuất ra mã LaTeX.
+
+YÊU CẦU CẤU TRÚC (BẮT BUỘC):
+Sử dụng đúng 3 loại môi trường:
+1. \\begin{ex} ... \\choice ... \\loigiai{} \\end{ex} (4 đáp án)
+2. \\begin{ex} ... \\choiceTFt ... \\loigiai{} \\end{ex} (Đúng/Sai)
+3. \\begin{ex} ... \\shortans[oly]{} \\loigiai{} \\end{ex} (Trả lời ngắn)
+
+HƯỚNG DẪN GIẢI:
+- Điền lời giải chi tiết vào bên trong thẻ \\loigiai{...}.
+- Sử dụng môi trường \\begin{itemize} \\item ... \\end{itemize} trong lời giải.
+- Xác định đáp án đúng và thêm lệnh \\True vào trước phương án đó trong \\choice hoặc \\choiceTFt.
+- Tính toán và điền đáp án số vào \\shortans[oly]{...} cho câu tự luận ngắn.
+
+QUAN TRỌNG:
+- Bắt đầu file bằng preamble chuẩn (anttor, ex_test, vietnam...).
+- Cuối file tạo bảng đáp án tổng hợp (nếu có thể).
+- Chỉ trả về mã LaTeX.
+`;
+          }
       }
 
       // Add prompt to parts
@@ -171,6 +272,7 @@ YÊU CẦU:
       });
 
       let text = response.text || "";
+      // Strip markdown code blocks if any remain
       return text.replace(/```html|```latex|```tex|```/g, "").trim();
   };
 
@@ -211,8 +313,8 @@ YÊU CẦU:
                     imageParts.push({ inlineData: { data: base64Image, mimeType: 'image/jpeg' } });
                 }
 
-                // Send this batch to AI
-                let batchResult = await processWithAI(imageParts, mode);
+                // Send this batch to AI (Pass activeTab to select prompt)
+                let batchResult = await processWithAI(imageParts, mode, activeTab as TabType);
                 
                 // Check Abort BEFORE updating content
                 if (abortRef.current) {
@@ -221,14 +323,17 @@ YÊU CẦU:
                 }
                 
                 // Append result IMMEDIATELY for streaming effect
-                setResultContent(prev => prev + batchResult + "<br/><br/>");
+                setResultContent(prev => prev + batchResult + (activeTab === 'word' ? "<br/><br/>" : "\n\n% --- Next Batch ---\n\n"));
                 
                 success = true; // Mark as success to exit retry loop
             } catch (err) {
                 console.warn(`Batch ${startPage}-${endPage} failed:`, err);
                 retryCount++;
                 if (retryCount >= MAX_RETRIES) {
-                    setResultContent(prev => prev + `<br/><p style="color:red; font-weight:bold;">[LỖI: Không thể xử lý trang ${startPage}-${endPage} sau nhiều lần thử. Đang bỏ qua...]</p><br/>`);
+                    const errorMsg = activeTab === 'word' 
+                        ? `<br/><p style="color:red; font-weight:bold;">[LỖI: Không thể xử lý trang ${startPage}-${endPage} sau nhiều lần thử. Đang bỏ qua...]</p><br/>`
+                        : `\n% [LỖI: Không thể xử lý trang ${startPage}-${endPage} sau nhiều lần thử]\n`;
+                    setResultContent(prev => prev + errorMsg);
                     // We don't throw here, we just skip this chunk and continue to next
                     success = true; 
                 } else {
@@ -255,6 +360,19 @@ YÊU CẦU:
     // Immediate feedback, no confirmation dialog
     abortRef.current = true;
     setLoadingStatus("Đang dừng... (Vui lòng đợi xử lý nốt phần hiện tại)");
+  };
+
+  const handleTabChange = (newTab: TabType) => {
+      // Clear content when switching contexts to avoid format mismatch
+      if ((newTab === 'word' && activeTab === 'latex') || (newTab === 'latex' && activeTab === 'word')) {
+          setResultContent("");
+          setFile(null);
+          setFileName("");
+          setPastedText("");
+          setProgress(0);
+          setError(null);
+      }
+      setActiveTab(newTab);
   };
 
   const handleSettingsClick = () => {
@@ -344,7 +462,8 @@ YÊU CẦU:
               parts.push({ text: `Nội dung đầu vào:\n${pastedText}` });
           }
 
-          const result = await processWithAI(parts, mode);
+          // Pass activeTab to select prompt
+          const result = await processWithAI(parts, mode, activeTab as TabType);
           if (!abortRef.current) {
               setResultContent(result);
               setProgress(100);
@@ -365,22 +484,41 @@ YÊU CẦU:
   const handleDownload = () => {
     let contentToSave = resultContent;
     if (contentEditableRef.current) {
-        contentToSave = contentEditableRef.current.innerHTML;
+        // If Word, get InnerHTML. If LaTeX, get InnerText (raw code)
+        contentToSave = activeTab === 'word' 
+            ? contentEditableRef.current.innerHTML 
+            : contentEditableRef.current.innerText;
     }
     if (!contentToSave) return;
 
-    const sourceHTML = createWordHtml(contentToSave, "Converted Document");
-    const source = 'data:application/vnd.ms-word;charset=utf-8,' + encodeURIComponent(sourceHTML);
-    const link = document.createElement("a");
-    link.href = source;
-    link.download = `Converted_${fileName.split('.')[0] || 'Document'}.doc`;
-    link.click();
+    if (activeTab === 'word') {
+        const sourceHTML = createWordHtml(contentToSave, "Converted Document");
+        const source = 'data:application/vnd.ms-word;charset=utf-8,' + encodeURIComponent(sourceHTML);
+        const link = document.createElement("a");
+        link.href = source;
+        link.download = `Converted_${fileName.split('.')[0] || 'Document'}.doc`;
+        link.click();
+    } else {
+        // LaTeX Download (.tex file)
+        const element = document.createElement("a");
+        const file = new Blob([contentToSave], {type: 'text/plain'});
+        element.href = URL.createObjectURL(file);
+        element.download = `Converted_${fileName.split('.')[0] || 'Document'}.tex`;
+        document.body.appendChild(element); 
+        element.click();
+        document.body.removeChild(element);
+    }
   };
 
   const handleCopy = () => {
-    let contentToCopy = resultContent;
+    let contentToCopy = "";
     if (contentEditableRef.current) {
-        contentToCopy = contentEditableRef.current.innerHTML;
+         // Copy raw text for Latex, HTML for Word
+         contentToCopy = activeTab === 'word' 
+            ? contentEditableRef.current.innerHTML 
+            : contentEditableRef.current.innerText;
+    } else {
+        contentToCopy = resultContent;
     }
 
     if (!contentToCopy) {
@@ -389,23 +527,56 @@ YÊU CẦU:
     }
 
     try {
-        const blob = new Blob([contentToCopy], { type: "text/html" });
-        const textBlob = new Blob([contentEditableRef.current?.innerText || resultContent], { type: "text/plain" });
-        const data = [new ClipboardItem({
-            ["text/html"]: blob,
-            ["text/plain"]: textBlob
-        })];
-
-        navigator.clipboard.write(data).then(() => {
-            alert("Đã sao chép nội dung thành công! Bạn có thể dán vào Word ngay.");
-        });
+        if (activeTab === 'word') {
+            const blob = new Blob([contentToCopy], { type: "text/html" });
+            const textBlob = new Blob([contentEditableRef.current?.innerText || resultContent], { type: "text/plain" });
+            const data = [new ClipboardItem({
+                ["text/html"]: blob,
+                ["text/plain"]: textBlob
+            })];
+            navigator.clipboard.write(data).then(() => alert("Đã sao chép nội dung Word!"));
+        } else {
+            // Simple text copy for LaTeX
+            navigator.clipboard.writeText(contentToCopy).then(() => alert("Đã sao chép mã LaTeX!"));
+        }
     } catch (err) {
         console.error("Lỗi khi sao chép:", err);
         alert("Lỗi khi sao chép. Vui lòng thử lại.");
     }
   };
 
+  const handleOpenOverleaf = () => {
+      let latexCode = "";
+      if (contentEditableRef.current) {
+          latexCode = contentEditableRef.current.innerText;
+      } else {
+          latexCode = resultContent;
+      }
+
+      if (!latexCode) {
+          alert("Không có nội dung để chuyển sang Overleaf.");
+          return;
+      }
+
+      // Create a form to POST data to Overleaf
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = 'https://www.overleaf.com/docs';
+      form.target = '_blank';
+
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'snip';
+      input.value = latexCode;
+
+      form.appendChild(input);
+      document.body.appendChild(form);
+      form.submit();
+      document.body.removeChild(form);
+  };
+
   const handleContentChange = (e: React.FormEvent<HTMLDivElement>) => {
+     // For LaTeX we might want to preserve line breaks more carefully, but standard innerHTML -> state is fine for now
      setResultContent(e.currentTarget.innerHTML);
   };
 
@@ -419,12 +590,12 @@ YÊU CẦU:
           {/* Header */}
           <div className="mb-8 flex-shrink-0">
              <h1 className="text-xl font-bold tracking-tight text-white/90 uppercase leading-snug">
-               CHUYỂN ĐỔI FILE PDF VÀ ẢNH SANG WORD
+               CHUYỂN ĐỔI FILE PDF VÀ ẢNH SANG WORD VÀ LATEX
              </h1>
           </div>
 
           {/* SETTINGS VIEW BACK BUTTON */}
-          {activeTab === 'settings' && (
+          {activeTab === 'settings' ? (
               <button
                 onClick={handleBackClick}
                 className="w-full mb-6 py-3 px-4 bg-blue-800 hover:bg-blue-700 text-white rounded-xl flex items-center gap-3 font-bold transition-all shadow-lg border border-blue-600"
@@ -434,10 +605,29 @@ YÊU CẦU:
                 </svg>
                 Quay lại
               </button>
+          ) : (
+             <div className="flex gap-3 mb-6">
+                {/* WORD TAB BUTTON */}
+                <button
+                    onClick={() => handleTabChange('word')}
+                    className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all ${activeTab === 'word' ? 'bg-white text-blue-900 shadow-lg' : 'bg-blue-800/50 text-blue-200 hover:bg-blue-800 hover:text-white'}`}
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                    Word
+                </button>
+                {/* LATEX TAB BUTTON */}
+                <button
+                    onClick={() => handleTabChange('latex')}
+                    className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all ${activeTab === 'latex' ? 'bg-white text-blue-900 shadow-lg' : 'bg-blue-800/50 text-blue-200 hover:bg-blue-800 hover:text-white'}`}
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
+                    LaTeX
+                </button>
+             </div>
           )}
 
-          {/* === CONTENT FOR HOME: CONVERTER === */}
-          {activeTab === 'home' && (
+          {/* === CONTENT FOR CONVERTER (WORD OR LATEX) === */}
+          {(activeTab === 'word' || activeTab === 'latex') && (
             <div className="space-y-6 animate-fade-in-up">
               
               {/* Step 1: Upload / Paste */}
@@ -489,18 +679,11 @@ YÊU CẦU:
                     </div>
                   </div>
                 </label>
-
-                {/* Paste Area Helper (Visual only, actual paste is handled globally or via input) */}
-                {!file && !pastedText && (
-                    <div className="text-center">
-                        <p className="text-[10px] text-blue-400 italic">Mẹo: Bạn có thể chụp màn hình và dán trực tiếp vào đây.</p>
-                    </div>
-                )}
               </div>
                 
               {/* Action Buttons */}
               <div className="space-y-3 pt-6">
-                    {/* Progress Bar (Only visible when loading) */}
+                    {/* Progress Bar */}
                     {isLoading && (
                         <div className="w-full bg-blue-950 rounded-full h-2.5 mb-2 border border-blue-800">
                             <div className="bg-green-500 h-2.5 rounded-full transition-all duration-500" style={{ width: `${progress}%` }}></div>
@@ -522,7 +705,7 @@ YÊU CẦU:
                       ) : (
                         <>
                           <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                          <span>Chuyển đổi ngay</span>
+                          <span>Chuyển đổi sang {activeTab === 'word' ? 'Word' : 'LaTeX'}</span>
                         </>
                       )}
                     </button>
@@ -534,11 +717,10 @@ YÊU CẦU:
                       className={`w-full py-3.5 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all 
                         ${isLoading || (!file && !pastedText) 
                             ? 'bg-blue-950 text-blue-500 cursor-not-allowed border border-blue-800' 
-                            : 'bg-yellow-500 hover:bg-yellow-400 text-white border border-yellow-500'}`}
+                            : 'bg-yellow-500 hover:bg-yellow-400 text-blue-900 border border-yellow-500'}`}
                     >
                        {isLoading && loadingStatus ? (
                         <>
-                           {/* Use same loading state but potentially different style if needed, currently sharing */}
                            <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                            <span className="text-sm truncate max-w-[200px]">{loadingStatus}</span>
                         </>
@@ -637,8 +819,12 @@ YÊU CẦU:
                 </>
              ) : (
                 <>
-                   <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-600" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6zM6 20V4h7v5h5v11H6z"/></svg>
-                   {isPreviewMode ? 'Xem trước kết quả (Chế độ đọc)' : 'Kết quả chuyển đổi (Chỉnh sửa được)'}
+                   {activeTab === 'word' ? (
+                       <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-600" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6zM6 20V4h7v5h5v11H6z"/></svg>
+                   ) : (
+                       <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
+                   )}
+                   {isPreviewMode ? 'Xem trước kết quả (Chế độ đọc)' : `Kết quả ${activeTab === 'word' ? 'Word (HTML)' : 'LaTeX'} (Chỉnh sửa được)`}
                 </>
              )}
           </h2>
@@ -657,12 +843,23 @@ YÊU CẦU:
                  </button>
             )}
             
-            {activeTab === 'home' && resultContent && (
+            {(activeTab === 'word' || activeTab === 'latex') && resultContent && (
                <>
                  <button onClick={handleDownload} className="px-5 py-2.5 text-sm font-bold text-white bg-green-600 hover:bg-green-700 rounded-lg shadow-sm flex items-center gap-2 transition-all">
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                    Tải xuống Word
+                    {activeTab === 'word' ? 'Tải xuống Word' : 'Tải xuống .Tex'}
                  </button>
+                 
+                 {/* OVERLEAF BUTTON (Only show in LaTeX Tab) */}
+                 {activeTab === 'latex' && (
+                     <button onClick={handleOpenOverleaf} className="px-5 py-2.5 text-sm font-bold text-white bg-teal-600 hover:bg-teal-700 rounded-lg shadow-sm flex items-center gap-2 transition-all">
+                        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                           <path d="M12 0c-6.627 0-12 5.373-12 12s5.373 12 12 12 12-5.373 12-12-5.373-12-12-12zm0 2c5.514 0 10 4.486 10 10s-4.486 10-10 10-10-4.486-10-10 4.486-10 10-10zm-1.5 5l-4.5 9h3l1.5-3.5 1.5 3.5h3l-4.5-9h-3zm1.5 1.5l2 5h-4l2-5z"/>
+                        </svg>
+                        Chạy trên Overleaf
+                     </button>
+                 )}
+
                  <button onClick={handleCopy} className="px-5 py-2.5 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm flex items-center gap-2 transition-all">
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" /></svg>
                     Sao chép
@@ -716,13 +913,12 @@ YÊU CẦU:
               </div>
            )}
 
-           {/* VIEW FOR CONVERSION RESULT */}
-           {activeTab === 'home' && (
+           {/* VIEW FOR CONVERSION RESULT (WORD OR LATEX) */}
+           {(activeTab === 'word' || activeTab === 'latex') && (
               <div className="w-full h-full bg-white p-4 md:p-8 animate-fade-in-up">
                  
                  {/* 
                     MODE 1: EDIT MODE (ContentEditable) 
-                    Allows user to edit text directly. Updates 'resultContent' on input/blur.
                  */}
                  {!isPreviewMode && (
                     <div 
@@ -731,7 +927,7 @@ YÊU CẦU:
                         suppressContentEditableWarning={true}
                         onInput={handleContentChange}
                         onBlur={handleContentChange}
-                        className={`generated-content prose prose-slate max-w-none w-full text-lg leading-relaxed text-gray-900 outline-none focus:ring-2 ring-blue-100 rounded-lg p-8 border border-gray-200 shadow-sm`}
+                        className={`generated-content prose prose-slate max-w-none w-full text-lg leading-relaxed text-gray-900 outline-none focus:ring-2 ring-blue-100 rounded-lg p-8 border border-gray-200 shadow-sm ${activeTab === 'latex' ? 'font-mono text-sm whitespace-pre-wrap' : ''}`}
                         style={{ minHeight: 'calc(100vh - 180px)' }}
                         dangerouslySetInnerHTML={{ __html: resultContent }}
                     >
@@ -744,7 +940,7 @@ YÊU CẦU:
                  */}
                  {isPreviewMode && (
                     <div 
-                        className={`generated-content prose prose-slate max-w-none w-full text-lg leading-relaxed text-gray-900 p-8 border border-gray-100`}
+                        className={`generated-content prose prose-slate max-w-none w-full text-lg leading-relaxed text-gray-900 p-8 border border-gray-100 ${activeTab === 'latex' ? 'font-mono text-sm whitespace-pre-wrap' : ''}`}
                         style={{ minHeight: 'calc(100vh - 180px)' }}
                         dangerouslySetInnerHTML={{ __html: resultContent }}
                     >
