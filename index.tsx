@@ -1023,7 +1023,7 @@ QUY TẮC QUAN TRỌNG:
           
           <div className="mb-8 flex-shrink-0">
              <h1 className="text-xl font-bold tracking-tight text-white/90 uppercase leading-snug">
-               CÔNG CỤ HỖ TRỢ NK12 - TIẾNG ANH
+               CHUYỂN ĐỔI FILE PDF, HÌNH ẢNH SANG WORD VÀ LATEX
              </h1>
           </div>
 
@@ -1244,7 +1244,7 @@ QUY TẮC QUAN TRỌNG:
                          <select 
                              value={filterType} 
                              onChange={(e) => setFilterType(e.target.value as any)}
-                             className="w-full bg-blue-800/30 border border-blue-600 rounded-lg p-2 text-white text-xs"
+                             className="w-full bg-blue-800 border border-blue-600 rounded-lg p-2 text-white text-xs"
                          >
                              <option value="all">Tất cả câu hỏi</option>
                              <option value="tn">Trắc nghiệm 4 đáp án</option>
