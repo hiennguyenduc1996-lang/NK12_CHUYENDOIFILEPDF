@@ -687,18 +687,25 @@ QUY TẮC QUAN TRỌNG:
    \\begin{ex}
    Nội dung...
    \\choice
-   {\\True A} {B} {C} {D}
+   {\\True A}
+   {B}
+   {C}
+   {D}
    \\end{ex}
-   (Xóa A., B., C., D. ở đầu)
+   (Xóa A., B., C., D. ở đầu, xóa dấu chấm cuối phương án)
 3. Đúng sai:
    \\begin{ex}
    Nội dung...
    \\choiceTFt
-   {\\True Ý đúng} {Ý sai}
+   {\\True Ý đúng}
+   {Ý sai}
+   {\\True Ý đúng}
+   {Ý sai}
    \\end{ex}
-   (Xóa a), b)... dùng \\True cho câu đúng)
+   (Xóa a), b)... dùng \\True cho câu đúng, trong Đúng sai có thể có nhiều đáp án đúng, đáp án nào đúng sẽ có \\True, xóa dấu chấm cuối phương án)
 4. Trả lời ngắn: \\shortans[oly]{Đáp án}
 5. Giữ nguyên cấu trúc đề thi.
+6. Các tên file hình ảnh trong chèn hình được việc chèn \\includegraphics[scale=1]{images/sothutucauhoi.png}
 `;
           }
       }
