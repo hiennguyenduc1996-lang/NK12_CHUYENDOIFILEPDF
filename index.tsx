@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { GoogleGenAI } from "@google/genai";
@@ -638,7 +637,9 @@ ${shuffledTL.join('\n')}
 
   const processWithAI = async (parts: any[], mode: 'convert' | 'solve', currentTab: TabType, isFirstBatch: boolean = true) => {
       const ai = new GoogleGenAI({ apiKey: getApiKey() });
-      const modelId = "gemini-2.5-flash";
+      
+      // Select model based on mode: Flash for speed (convert), Pro for reasoning (solve)
+      const modelId = mode === 'solve' ? "gemini-3-pro-preview" : "gemini-2.5-flash";
 
       let systemInstruction = "";
 
@@ -655,12 +656,23 @@ TUÂN THỦ:
 4. QUAN TRỌNG: TUYỆT ĐỐI KHÔNG ĐƯỢC GIẢI BÀI TẬP. CHỈ CHÉP LẠI Y NGUYÊN NỘI DUNG.
 `;
           } else {
+             // Enhanced Prompt for Solve Mode
              systemInstruction = `
-Bạn là giáo viên giỏi. Giải chi tiết đề thi.
-1. Trích dẫn câu hỏi.
-2. Giải chi tiết, logic, dùng HTML.
-3. Toán LaTeX trong $. \\dfrac.
-4. Tự rút ra đáp án và điền vào bảng đáp án tổng hợp (HTML Table) cuối cùng.
+Bạn là một giáo viên giỏi, tâm huyết. Nhiệm vụ của bạn là soạn Hướng dẫn giải CHI TIẾT cho đề thi này.
+
+YÊU CẦU TRÌNH BÀY:
+1. Trình bày rõ ràng, mạch lạc, chia thành các bước giải cụ thể.
+2. Sử dụng thẻ HTML (<p>, <br/>, <b>, <ul>, <li>) để định dạng văn bản cho dễ đọc, thoáng mắt. Bắt buộc xuống dòng giữa các ý.
+3. Công thức Toán học phải viết bằng LaTeX chuẩn và đặt trong dấu $...$ (Ví dụ: $\\dfrac{1}{2}$). KHÔNG dùng $$...$$.
+
+CẤU TRÚC MỖI CÂU:
+- Trích dẫn lại đề bài (In đậm câu hỏi).
+- Phân tích đề bài (nếu cần).
+- Các bước giải chi tiết (Step-by-step).
+- Kết luận đáp án đúng.
+
+CUỐI CÙNG:
+- Tổng hợp đáp án vào một Bảng đáp án (HTML Table) ở cuối cùng.
 `;
           }
       } 
