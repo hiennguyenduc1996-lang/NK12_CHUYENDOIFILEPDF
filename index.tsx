@@ -653,6 +653,7 @@ TUÂN THỦ:
 1. Sửa lỗi chính tả, unicode.
 2. Công thức toán dùng $...$. KHÔNG dùng $$...$$. \\frac -> \\dfrac.
 3. Chỉ trả về nội dung Body HTML.
+4. In dấm Câu 1. Câu 2. và Im đậm A. B. C. D. nhé.
 4. QUAN TRỌNG: TUYỆT ĐỐI KHÔNG ĐƯỢC GIẢI BÀI TẬP. CHỈ CHÉP LẠI Y NGUYÊN NỘI DUNG.
 `;
           } else {
@@ -670,7 +671,7 @@ CẤU TRÚC MỖI CÂU:
 - Phân tích đề bài (nếu cần).
 - Các bước giải chi tiết (Step-by-step).
 - Kết luận đáp án đúng.
-
+- Mỗi bước hướng dẫn sẽ nằm trên 1 dòng cho dễ đọc.
 CUỐI CÙNG:
 - Tổng hợp đáp án vào một Bảng đáp án (HTML Table) ở cuối cùng.
 `;
@@ -699,13 +700,34 @@ QUY TẮC QUAN TRỌNG:
    \\begin{ex}
    Nội dung...
    \\choice
+   {A}
+   {B}
+   {C}
+   {D}
+   \\end{ex}
+   (Xóa A., B., C., D. ở đầu, xóa dấu chấm cuối phương án, Xóa Câu 1. , Câu 2. .hoặc Câu 1: Hoặc Câu 2 trong nội dung câu hỏi.)
+3. Đúng sai:
+   \\begin{ex}
+   Nội dung...
+   \\choiceTFt
+   {Ý 1}
+   {Ý 2}
+   {Ý 3}
+   {Ý 4}
+   \\end{ex}
+   (Xóa a), b), c), d). Xóa dấu chấm cuối phương án. Xóa A. B. C. D. trong nội dung câu hỏi, Xóa Câu 1. , Câu 2. .hoặc Câu 1: Hoặc Câu 2 trong nội dung câu hỏi.)
+4. Nếu các kí tự A. B. C. D. hoặc a) b) c) d) được gạch chân thì thêm \\True trước vào trước ý đúng.
+    Trắc nghiệm 4 đáp án:
+   \\begin{ex}
+   Nội dung...
+   \\choice
    {\\True A}
    {B}
    {C}
    {D}
    \\end{ex}
-   (Xóa A., B., C., D. ở đầu, xóa dấu chấm cuối phương án)
-3. Đúng sai:
+   (Xóa A., B., C., D. ở đầu, xóa dấu chấm cuối phương án, Xóa Câu 1. , Câu 2. .hoặc Câu 1: Hoặc Câu 2 trong nội dung câu hỏi.)
+   Đúng sai:
    \\begin{ex}
    Nội dung...
    \\choiceTFt
@@ -714,10 +736,39 @@ QUY TẮC QUAN TRỌNG:
    {\\True Ý đúng}
    {Ý sai}
    \\end{ex}
-   (Xóa a), b)... dùng \\True cho câu đúng, trong Đúng sai có thể có nhiều đáp án đúng, đáp án nào đúng sẽ có \\True, xóa dấu chấm cuối phương án)
-4. Trả lời ngắn: \\shortans[oly]{Đáp án}
-5. Giữ nguyên cấu trúc đề thi.
-6. Các tên file hình ảnh trong chèn hình được việc chèn \\includegraphics[scale=1]{images/sothutucauhoi.png}
+5. Trả lời ngắn: \\shortans[oly]{}
+6. Nếu trong nội dung có chưa đáp án dạng chuỗi số thì dùng \\shortans[oly]{đáp án chuỗi số}
+Nếu trong các câu hỏi có chứa hình ảnh.
+    Trắc nghiệm 4 đáp án:
+   \\begin{ex}
+   \\immini[thm]{Nội dung...
+   \\choice
+   {A}
+   {B}
+   {C}
+   {D}}{\\includegraphics[scale=1]{images/sothutucauhoi.png}}
+   \\end{ex}
+   (Xóa A., B., C., D. ở đầu, xóa dấu chấm cuối phương án, Xóa Câu 1. , Câu 2. .hoặc Câu 1: Hoặc Câu 2 trong nội dung câu hỏi.)
+Đúng sai:
+   \\begin{ex}
+   Nội dung...
+   \\begin{center}
+   \\includegraphics[scale=1]{images/sothutucauhoi.png}
+   \\end{center}
+   \\choiceTFt
+   {Ý 1}
+   {Ý 2}
+   {Ý 3}
+   {Ý 4}
+   \\end{ex}
+Tự luận ngắn.
+   \\begin{ex}
+    \immini[thm]{Nội dung}{\\includegraphics[scale=1]{images/sothutucauhoi.png}}
+    \\shortans[oly]{}
+6. Giữ nguyên cấu trúc đề thi.
+7. Các tên file hình ảnh trong chèn hình được việc chèn \\includegraphics[scale=1]{images/sothutucauhoi.png}
+oly]{}
+   \\end{ex}
 `;
           }
       }
